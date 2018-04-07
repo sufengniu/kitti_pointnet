@@ -15,12 +15,12 @@ from external.structural_losses.tf_approxmatch import approx_match, match_cost
 
 # Data setting
 batch_size = 32
-origin_num_points = 100
+origin_num_points = 200
 k = 10
 # Tensorflow code below
 n_filters = 10
 lr = 0.001 # learning rate
-num_epochs = 10000
+num_epochs = 3000
 
 
 # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
@@ -55,8 +55,20 @@ code = tf.reduce_max(net, axis=-2, keepdims=True)
 print (code)
 
 # ------- decoder  ------- 
-x_reconstr = tf_util.fully_connected_decoder(net, batch_size, origin_num_points, is_training)
-# x_reconstr, mu_reconstr = tf_util.anchor_decoder(code, is_training, batch_size, origin_num_points, num_anchors=10, n_filters = 3)
+# x_reconstr = tf_util.fully_connected_decoder(net, batch_size, origin_num_points, is_training)
+
+map_size = [20, 10]
+global_code_tile = tf.tile(code, [1, origin_num_points, 1])
+local_code = tf_util.fold(map_size[0], map_size[1])
+local_code = tf.reshape(local_code, [1, origin_num_points, 2])
+local_code_tile = tf.tile(local_code, [batch_size, 1, 1])
+all_code = tf.concat([local_code_tile, global_code_tile], axis = -1)
+
+net = tf_util.point_conv(all_code, "1", is_training, 100, activation_function = tf.nn.relu)
+net = tf_util.point_conv(net, "2", is_training, 100, activation_function = tf.nn.relu)
+net = tf_util.point_conv(net, "3", is_training, 50, activation_function = tf.nn.relu)
+net = tf_util.point_conv(net, "4", is_training, 10, activation_function = tf.nn.relu)
+x_reconstr = tf_util.point_conv(net, "5", is_training, 3, activation_function = tf.nn.tanh)
 
 x_reconstr = x_reconstr * mask
 #  -------  loss + optimization  ------- 
@@ -68,6 +80,7 @@ reconstruction_loss = tf.reduce_mean(match_cost(x_reconstr, gt, match))
 optimizer = tf.train.AdamOptimizer(learning_rate=lr)
 train_op = optimizer.minimize(reconstruction_loss)
 sess = tf.InteractiveSession()
+saver = tf.train.Saver()
 tf.global_variables_initializer().run()
 
 all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size)
@@ -82,10 +95,16 @@ for i in range(num_epochs):
     data.shuffle_data(all_pc_data, all_meta_data)
     print ("iteration: {}, loss: {}".format(i, emd_loss))
 
-fig = plt.figure()
-plt.plot(X[0,:,0], X[0,:,1], 'bs', recon[0,:,0], recon[0,:,1], 'ro')
-plt.savefig('anchor')
-plt.close()
+saver.save(sess, 'model/grid_model.ckpt')
+
+
+# for i in range(10):
+#     pc_visual = recon
+#     fig = plt.figure()
+#     ax = Axes3D(fig)
+#     ax.scatter(pc_visual[i,:,0], pc_visual[i,:,1], pc_visual[i,:,2], 'ro')
+#     ax.scatter(X_pc[i,:,0], X_pc[i,:,1], X_pc[i,:,2], 'bo')
+#     plt.savefig('imgs/gen_%d.png' % (i), dpi=80)
 
 
 # record_loss = []

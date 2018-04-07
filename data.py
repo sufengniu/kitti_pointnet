@@ -63,33 +63,50 @@ def get_points_from_cellmap(cellmap, cell_per_meter=5, cellmap_radius=30, num_po
     return points
 
 
-def get_batch_data_from_cellmap(cellmap, num_points_lower_threshold=50, num_points_upper_threshold=100):
+def get_batch_data_from_cellmap(cellmap, num_points_lower_threshold=50, num_points_upper_threshold=200):
 
     batch_data = []
-    meta_data = []
+    number_points = []
+    centroids = []
 
     for i_cell in cellmap.keys():
+
         points = cellmap[i_cell]
         num_points = points.shape[0]
         if num_points < num_points_lower_threshold:
+            # no AE compression
             continue
 
-        meta_data.append(num_points)
-        if num_points == num_points_upper_threshold:
-            batch_data.append(points)
+        number_points.append(num_points)
 
-        if num_points < num_points_upper_threshold:
-            tmp = np.concatenate([points, np.zeros((num_points_upper_threshold-num_points, 4))],axis=0)
-            batch_data.append(tmp)
-
+        # sampling if too many points
         if num_points > num_points_upper_threshold:
             sample_index = np.random.choice(num_points, num_points_upper_threshold, replace=False)
-            batch_data.append(points[sample_index, :])
+            points = points[sample_index, :]
+
+        # centralize data
+        centroid = points.mean(axis=0)
+        centroids.append(centroid)
+        points = points - centroid
+
+        # data same shape
+        if num_points < num_points_upper_threshold:
+            cellpoints = np.concatenate([points, np.zeros((num_points_upper_threshold-num_points, 4))],axis=0)
+        else:
+            cellpoints = points
+
+        batch_data.append(cellpoints)
 
     # batch * num_points_upper_threshold * 4
     batch_data = np.stack(batch_data)
     # batch
-    meta_data = np.stack(meta_data)
+    number_points = np.stack(number_points)
+    # batch
+    centroids = np.stack(centroids)
+
+    meta_data = {}
+    meta_data['number_points'] = number_points
+    meta_data['centroids'] = centroids
 
     return batch_data, meta_data
 
@@ -101,8 +118,7 @@ def shuffle_data(point_clouds, meta, seed=12345):
     np.random.shuffle(perm)
     return point_clouds[perm], meta[perm]
 
-def rescale(point_clouds, meta, num_points_upper_threshold=100):
-
+def rescale(point_clouds, meta, num_points_upper_threshold=200):
 
     point_mean = []
     point_scaled = []
@@ -125,7 +141,7 @@ def load_pc_data(batch_size, n_threads=16, shuffle=True):
     date = '2011_09_26'
     drive = '0001'
     basedir = '/scratch2/sniu/kitti'
-    num_points_upper_threshold = 100
+    num_points_upper_threshold = 200
 
     dataset = load_dataset(date, drive, basedir)
     # for visualization
@@ -135,6 +151,7 @@ def load_pc_data(batch_size, n_threads=16, shuffle=True):
 
     dataset_velo = list(dataset.velo)
     all_points = np.empty([0, num_points_upper_threshold, dataset_velo[0].shape[1]], dtype=np.float32)
+    all_centroids = np.empty([0, dataset_velo[0].shape[1]], dtype=np.float32)
     all_meta = np.empty([0], dtype=np.int32)
 
     print ('------ loading pointnet data ------')
@@ -143,8 +160,9 @@ def load_pc_data(batch_size, n_threads=16, shuffle=True):
         batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
 
         all_points = np.concatenate([all_points, batch_points], axis=0)
-        all_meta = np.concatenate([all_meta, batch_meta], axis=0)
-        
+        all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
+        all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
+
     pool.close()
     pool.join()
 
@@ -152,10 +170,14 @@ def load_pc_data(batch_size, n_threads=16, shuffle=True):
         all_points, all_meta = shuffle_data(all_points, all_meta)
 
     all_points = all_points[:,:,:3]
-    all_points, all_mean = rescale(all_points, all_meta, num_points_upper_threshold=num_points_upper_threshold)
+    # all_points, all_mean = rescale(all_points, all_meta, num_points_upper_threshold=num_points_upper_threshold)
 
-    return all_points, all_meta, all_mean
+    return all_points, all_meta, all_centroids
 
-
-def generate_batch(batch_size, all_points, all_meta):
-
+def visualize_3d_points(points, num=1000000):
+    num = min(points.shape[0], num)
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(points[:num, 0], points[:num, 1], points[:num, 2], c='r', marker='.')
+    plt.axis('equal')
+    plt.show()

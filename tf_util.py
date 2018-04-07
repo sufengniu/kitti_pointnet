@@ -821,21 +821,23 @@ def fold(m, n):
    
    return tf.concat([idx_1, idx_2], axis=-1)
 
-def dist_vis(recon, orig):
+def dist_vis(recon, orig, meta):
     num_anchor = recon.shape[1]
     num_points = orig.shape[1]
     num_patition = num_points // num_anchor
 
     dist = []
     for i in range(num_anchor):
-        tmp_dist = orig - np.expand_dims(recon[:,i,:], 1)
-        dist.append(np.sort(tmp_dist, 1)[:,:num_patition,:])
-    dist = np.linalg.norm(np.array(dist), ord=2, aixs=-1) # [num_anchor, batch_size, num_patition]
+        tmp_dist = np.sum((orig - np.expand_dims(recon[:,i,:], 1))**2, axis=-1)
+        dist.append(np.sort(tmp_dist, 1)[:,:num_patition])
+    dist = np.stack(dist) # [num_anchor, batch_size, num_patition]
+    dist = np.squeeze(np.transpose(dist, [1,0,2]))
 
-    nrows = 2
-    ncols = 5
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols)
-    for i in range(num_anchor):
-        pd.DataFrame(np.reshape(dist[i,:,:], (-1))).plot(kind='density', ax=axes[int(i/ncols),i%ncols], legend=False)
+    filtered_dist = np.empty([0])
+    for i in range(batch_size):
+        idx = np.arange(meta[0])
+        filtered_dist = np.concatenate([filtered_dist, dist[i, idx]])
+    
+    pd.DataFrame(np.reshape(dist, (-1))).plot(kind='density')
     plt.savefig('dist_distribution')
     plt.close()
