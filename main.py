@@ -13,6 +13,7 @@ from external.structural_losses.tf_nndistance import nn_distance
 from external.structural_losses.tf_approxmatch import approx_match, match_cost
 
 
+
 # Data setting
 batch_size = 32
 origin_num_points = 200
@@ -24,8 +25,8 @@ num_epochs = 3000
 
 
 # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
-gt = tf.placeholder(tf.float32, [batch_size, origin_num_points, 3])
-meta = tf.placeholder(tf.int32, [batch_size])
+gt = tf.placeholder(tf.float32, [None, origin_num_points, 3])
+meta = tf.placeholder(tf.int32, [None])
 is_training = tf.placeholder(tf.bool, shape=())
 
 mask = tf.sequence_mask(meta, maxlen=origin_num_points, dtype=tf.float32)
@@ -55,7 +56,7 @@ code = tf.reduce_max(net, axis=-2, keepdims=True)
 print (code)
 
 # ------- decoder  ------- 
-# x_reconstr = tf_util.fully_connected_decoder(net, batch_size, origin_num_points, is_training)
+# x_reconstr = tf_util.fully_connected_decoder(code, origin_num_points, is_training)
 
 map_size = [20, 10]
 global_code_tile = tf.tile(code, [1, origin_num_points, 1])
@@ -72,10 +73,10 @@ x_reconstr = tf_util.point_conv(net, "5", is_training, 3, activation_function = 
 
 x_reconstr = x_reconstr * mask
 #  -------  loss + optimization  ------- 
-match = approx_match(x_reconstr, gt)
-reconstruction_loss = tf.reduce_mean(match_cost(x_reconstr, gt, match))
-# cost_p1_p2, _, cost_p2_p1, _ = nn_distance(x_reconstr, gt)
-# reconstruction_loss = tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
+# match = approx_match(x_reconstr, gt)
+# reconstruction_loss = tf.reduce_mean(match_cost(x_reconstr, gt, match))
+cost_p1_p2, _, cost_p2_p1, _ = nn_distance(x_reconstr, gt)
+reconstruction_loss = tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
 
 optimizer = tf.train.AdamOptimizer(learning_rate=lr)
 train_op = optimizer.minimize(reconstruction_loss)
@@ -95,7 +96,9 @@ for i in range(num_epochs):
     data.shuffle_data(all_pc_data, all_meta_data)
     print ("iteration: {}, loss: {}".format(i, emd_loss))
 
-saver.save(sess, 'model/grid_model.ckpt')
+tf_util.dist_vis(recon, X_pc, X_meta)
+
+saver.save(sess, 'model/grid_model_chamfer.ckpt')
 
 
 # for i in range(10):

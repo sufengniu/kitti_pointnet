@@ -3,6 +3,12 @@ import tensorflow as tf
 import os
 import os.path as osp
 import pandas as pd
+import scipy
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 # from in_out import snc_category_to_synth_id, create_dir, PointCloudDataSet, load_all_point_clouds_under_folder
 
@@ -603,15 +609,15 @@ def get_edge_feature(point_cloud, nn_idx, k=20):
   Returns:
     edge features: (batch_size, num_points, k, num_dims)
   """
-  og_batch_size = point_cloud.get_shape().as_list()[0]
-  point_cloud = tf.squeeze(point_cloud)
-  if og_batch_size == 1:
-    point_cloud = tf.expand_dims(point_cloud, 0)
+  # og_batch_size = point_cloud.get_shape().as_list()[0]
+  # point_cloud = tf.squeeze(point_cloud)
+  # if og_batch_size == 1:
+  #   point_cloud = tf.expand_dims(point_cloud, 0)
 
   point_cloud_central = point_cloud
 
   point_cloud_shape = point_cloud.get_shape()
-  batch_size = point_cloud_shape[0].value
+  batch_size = tf.shape(point_cloud)[0]
   num_points = point_cloud_shape[1].value
   num_dims = point_cloud_shape[2].value
 
@@ -623,8 +629,10 @@ def get_edge_feature(point_cloud, nn_idx, k=20):
   point_cloud_central = tf.expand_dims(point_cloud_central, axis=-2)
 
   point_cloud_central = tf.tile(point_cloud_central, [1, 1, k, 1])
-
+  
   edge_feature = tf.concat([point_cloud_central, point_cloud_neighbors-point_cloud_central], axis=-1)
+  edge_feature = tf.reshape(edge_feature, [-1, num_points, k, 2*num_dims])
+
   return edge_feature
 
 
@@ -634,15 +642,18 @@ def neighbor_conv(input_image, name, is_training, n_filters = 10, activation_fun
                 activation_fn=activation_function,
                 bn=True, is_training=is_training,
                 scope=name, bn_decay=None)
-   net = tf.reduce_max(net, axis=-2, keepdims=True)
+   net = tf.reduce_max(net, axis=-2, keepdims=False)
    net = tf.nn.relu(net)
-   net = tf.squeeze(net)
+   # net = tf.squeeze(net, -2)
 
    return net
 
-def fully_connected_decoder(net, batch_size, num_points, is_training):
+def fully_connected_decoder(net, num_points, is_training):
 
-   net = tf.reshape(net, [batch_size, -1])
+   num_code = net.get_shape()[2]
+   batch_size = tf.shape(net)[0]
+
+   net = tf.reshape(net, [-1, num_code])
 
    net = fully_connected(net, 256, scope='fc1', bn=True,
                       bn_decay=None, is_training=is_training,
@@ -655,8 +666,8 @@ def fully_connected_decoder(net, batch_size, num_points, is_training):
    net = fully_connected(net, num_points*3, scope='fc3', bn=True,  
                       bn_decay=None, is_training=is_training,
                       activation_fn=tf.nn.tanh)
-   
-   net = tf.reshape(net, [-1, num_points, 3])
+
+   net = tf.reshape(net, [batch_size, num_points, 3])
 
    return net
 
@@ -822,22 +833,20 @@ def fold(m, n):
    return tf.concat([idx_1, idx_2], axis=-1)
 
 def dist_vis(recon, orig, meta):
+    batch_size = recon.shape[0]
     num_anchor = recon.shape[1]
     num_points = orig.shape[1]
     num_patition = num_points // num_anchor
 
-    dist = []
-    for i in range(num_anchor):
-        tmp_dist = np.sum((orig - np.expand_dims(recon[:,i,:], 1))**2, axis=-1)
-        dist.append(np.sort(tmp_dist, 1)[:,:num_patition])
-    dist = np.stack(dist) # [num_anchor, batch_size, num_patition]
-    dist = np.squeeze(np.transpose(dist, [1,0,2]))
-
-    filtered_dist = np.empty([0])
+    all_dist = np.empty([0])
     for i in range(batch_size):
-        idx = np.arange(meta[0])
-        filtered_dist = np.concatenate([filtered_dist, dist[i, idx]])
+        idx = np.arange(meta[i])
+        dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
+        dist_vec = np.min(dist_tmp, 1) # [num_points]
+        all_dist = np.concatenate([all_dist, dist_vec])
     
-    pd.DataFrame(np.reshape(dist, (-1))).plot(kind='density')
+    mean, var, mse = np.mean(all_dist), np.var(all_dist), np.sum(all_dist**2)
+    print ("mean: %.4f, var: %.4f, mse: %.4f" % (mean, var, mse))
+    pd.DataFrame(all_dist).plot(kind='density')
     plt.savefig('dist_distribution')
     plt.close()
