@@ -323,6 +323,7 @@ def fully_connected(inputs,
   """
   with tf.variable_scope(scope) as sc:
     num_input_units = inputs.get_shape()[-1].value
+
     weights = _variable_with_weight_decay('weights',
                                           shape=[num_input_units, num_outputs],
                                           use_xavier=use_xavier,
@@ -439,10 +440,7 @@ def avg_pool3d(inputs,
     return outputs
 
 
-
-
-
-def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
+def batch_norm_template(inputs, is_training, scope, moments_dims_unused, bn_decay, data_format='NHWC'):
   """ Batch normalization on convolutional maps and beyond...
   Ref.: http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow
   
@@ -452,34 +450,55 @@ def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
       scope:         string, variable scope
       moments_dims:  a list of ints, indicating dimensions for moments calculation
       bn_decay:      float or float tensor variable, controling moving average weight
+      data_format:   'NHWC' or 'NCHW'
   Return:
       normed:        batch-normalized maps
   """
-  with tf.variable_scope(scope) as sc:
-    num_channels = inputs.get_shape()[-1].value
-    beta = tf.Variable(tf.constant(0.0, shape=[num_channels]),
-                       name='beta', trainable=True)
-    gamma = tf.Variable(tf.constant(1.0, shape=[num_channels]),
-                        name='gamma', trainable=True)
-    batch_mean, batch_var = tf.nn.moments(inputs, moments_dims, name='moments')
-    decay = bn_decay if bn_decay is not None else 0.9
-    ema = tf.train.ExponentialMovingAverage(decay=decay)
-    # Operator that maintains moving averages of variables.
-    ema_apply_op = tf.cond(is_training,
-                           lambda: ema.apply([batch_mean, batch_var]),
-                           lambda: tf.no_op())
+  bn_decay = bn_decay if bn_decay is not None else 0.9
+  return tf.contrib.layers.batch_norm(inputs, 
+                                      center=True, scale=True,
+                                      is_training=is_training, decay=bn_decay,updates_collections=None,
+                                      scope=scope,
+                                      data_format=data_format)
+
+# def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
+#   """ Batch normalization on convolutional maps and beyond...
+#   Ref.: http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow
+  
+#   Args:
+#       inputs:        Tensor, k-D input ... x C could be BC or BHWC or BDHWC
+#       is_training:   boolean tf.Varialbe, true indicates training phase
+#       scope:         string, variable scope
+#       moments_dims:  a list of ints, indicating dimensions for moments calculation
+#       bn_decay:      float or float tensor variable, controling moving average weight
+#   Return:
+#       normed:        batch-normalized maps
+#   """
+#   with tf.variable_scope(scope) as sc:
+#     num_channels = inputs.get_shape()[-1].value
+#     beta = tf.Variable(tf.constant(0.0, shape=[num_channels]),
+#                        name='beta', trainable=True)
+#     gamma = tf.Variable(tf.constant(1.0, shape=[num_channels]),
+#                         name='gamma', trainable=True)
+#     batch_mean, batch_var = tf.nn.moments(inputs, moments_dims, name='moments')
+#     decay = bn_decay if bn_decay is not None else 0.9
+#     ema = tf.train.ExponentialMovingAverage(decay=decay)
+#     # Operator that maintains moving averages of variables.
+#     ema_apply_op = tf.cond(is_training,
+#                            lambda: ema.apply([batch_mean, batch_var]),
+#                            lambda: tf.no_op())
     
-    # Update moving average and return current batch's avg and var.
-    def mean_var_with_update():
-      with tf.control_dependencies([ema_apply_op]):
-        return tf.identity(batch_mean), tf.identity(batch_var)
+#     # Update moving average and return current batch's avg and var.
+#     def mean_var_with_update():
+#       with tf.control_dependencies([ema_apply_op]):
+#         return tf.identity(batch_mean), tf.identity(batch_var)
     
-    # ema.average returns the Variable holding the average of var.
-    mean, var = tf.cond(is_training,
-                        mean_var_with_update,
-                        lambda: (ema.average(batch_mean), ema.average(batch_var)))
-    normed = tf.nn.batch_normalization(inputs, mean, var, beta, gamma, 1e-3)
-  return normed
+#     # ema.average returns the Variable holding the average of var.
+#     mean, var = tf.cond(is_training,
+#                         mean_var_with_update,
+#                         lambda: (ema.average(batch_mean), ema.average(batch_var)))
+#     normed = tf.nn.batch_normalization(inputs, mean, var, beta, gamma, 1e-3)
+#   return normed
 
 
 def batch_norm_for_fc(inputs, is_training, bn_decay, scope):
@@ -636,49 +655,47 @@ def get_edge_feature(point_cloud, nn_idx, k=20):
   return edge_feature
 
 
-def neighbor_conv(input_image, name, is_training, n_filters = 10, activation_function = tf.nn.relu):
+def neighbor_conv(input_image, name, is_training, n_filters=10, activation_function=tf.nn.relu, bn_decay=None):
    net = conv2d(input_image, n_filters, [1,1],
                 padding='VALID', stride=[1,1],
                 activation_fn=activation_function,
                 bn=True, is_training=is_training,
-                scope=name, bn_decay=None)
+                scope=name, bn_decay=bn_decay)
    net = tf.reduce_max(net, axis=-2, keepdims=False)
    net = tf.nn.relu(net)
    # net = tf.squeeze(net, -2)
 
    return net
 
-def fully_connected_decoder(net, num_points, is_training):
+def fully_connected_decoder(net, num_points, is_training, bn_decay=None):
 
-   num_code = net.get_shape()[2]
-   batch_size = tf.shape(net)[0]
+   # batch_size = tf.shape(net)[0]
 
+   num_code = net.get_shape()[1]
    net = tf.reshape(net, [-1, num_code])
 
    net = fully_connected(net, 256, scope='fc1', bn=True,
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.relu)
-
    net = fully_connected(net, 256, scope='fc2', bn=True,   
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.relu)
-
    net = fully_connected(net, num_points*3, scope='fc3', bn=True,  
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.tanh)
 
-   net = tf.reshape(net, [batch_size, num_points, 3])
+   net = tf.reshape(net, [-1, num_points, 3])
 
    return net
 
-def point_conv(input_image, name, is_training, n_filters = 10, activation_function = tf.nn.relu):
+def point_conv(input_image, name, is_training, n_filters=10, activation_function=tf.nn.relu, bn_decay=None):
    
    net = tf.expand_dims(input_image, -2)
    net = conv2d(net, n_filters, [1,1],
                     padding='VALID', stride=[1,1],
                     activation_fn=activation_function,
                     bn=True, is_training=is_training,
-                    scope=name, bn_decay=None)
+                    scope=name, bn_decay=bn_decay)
    net = tf.squeeze(net, -2)
 
    return net
@@ -690,7 +707,7 @@ def generate_bar(num_points):
    x = np.random.uniform(0, 1, [num_points])
    y = -B * np.square(x-A) + B * np.square(A)
    z = np.zeros_like(x)
-   points = np.stack([x, y, z],axis=-1)
+   points = np.stack([x, y, z], axis=-1)
    return points
 
 def rotation(points, theta):
@@ -699,6 +716,7 @@ def rotation(points, theta):
    z = points[:,2]
    rotated_points = np.stack([x,y,z],axis=-1)
    return rotated_points
+
 def generate_multiple_bars(num_points, bar_num=4):
 
    for i_bar in range(bar_num):
@@ -712,7 +730,7 @@ def generate_multiple_bars(num_points, bar_num=4):
            all_points = points
    return all_points
 
-def generate_batch_data(batch_size, num_points, bar_num = 4):
+def generate_batch_data(batch_size, num_points, bar_num=4):
    num_points_per_bar = int(num_points / bar_num)
 
    all_points = []
@@ -749,22 +767,22 @@ def generate_batch_data(batch_size, num_points, bar_num = 4):
 #   return feed_pc_test
 
 
-def gmm_decoder(net, is_training, batch_size, num_points, num_anchors, n_filters):
+def gmm_decoder(net, is_training, batch_size, num_points, num_anchors, n_filters, bn_decay=None):
 
    tile_num = int(num_points/num_anchors)
 
    # fully connected
    net = tf.reshape(net, [batch_size, -1])
    net = fully_connected(net, 256, scope='fc1', bn=True,
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.relu)
 
    net = fully_connected(net, 256, scope='fc2', bn=True,   
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.relu)
 
    net = fully_connected(net, num_anchors*n_filters, scope='fc3', bn=True,  
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.tanh)
    net = tf.reshape(net, [-1, num_anchors, n_filters])
 
@@ -781,34 +799,34 @@ def gmm_decoder(net, is_training, batch_size, num_points, num_anchors, n_filters
                 padding='VALID', stride=[1,1],
                 activation_fn=tf.nn.tanh,
                 bn=True, is_training=is_training,
-                scope='1', bn_decay=None)   
+                scope='1', bn_decay=bn_decay)   
    net = tf.squeeze(net, axis = -2)
 
    mu_net = conv2d(tf.expand_dims(mu, -2), 3, [1,1],
                 padding='VALID', stride=[1,1],
                 activation_fn=tf.nn.tanh,
                 bn=True, is_training=is_training,
-                scope='1', bn_decay=None) 
+                scope='1', bn_decay=bn_decay) 
    mu_net = tf.squeeze(mu_net, axis = -2)
    return net, mu_net
 
 
-def anchor_decoder(net, is_training, batch_size, num_points, num_anchors, n_filters):
+def anchor_decoder(net, is_training, batch_size, num_points, num_anchors, n_filters, bn_decay=None):
 
    tile_num = int(num_points/num_anchors)
 
    # fully connected
    net = tf.reshape(net, [batch_size, -1])
    net = fully_connected(net, 256, scope='fc1', bn=True,
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.relu)
 
    net = fully_connected(net, 256, scope='fc2', bn=True,   
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.relu)
 
    net = fully_connected(net, num_anchors*n_filters, scope='fc3', bn=True,  
-                      bn_decay=None, is_training=is_training,
+                      bn_decay=bn_decay, is_training=is_training,
                       activation_fn=tf.nn.tanh)
    net = tf.reshape(net, [-1, num_anchors, n_filters])
 
@@ -832,21 +850,59 @@ def fold(m, n):
    
    return tf.concat([idx_1, idx_2], axis=-1)
 
-def dist_vis(recon, orig, meta):
+def dist_stat(recon, orig, meta, num_points_upper_threshold=200):
     batch_size = recon.shape[0]
     num_anchor = recon.shape[1]
     num_points = orig.shape[1]
     num_patition = num_points // num_anchor
 
     all_dist = np.empty([0])
-    for i in range(batch_size):
-        idx = np.arange(meta[i])
-        dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
-        dist_vec = np.min(dist_tmp, 1) # [num_points]
-        all_dist = np.concatenate([all_dist, dist_vec])
-    
-    mean, var, mse = np.mean(all_dist), np.var(all_dist), np.sum(all_dist**2)
-    print ("mean: %.4f, var: %.4f, mse: %.4f" % (mean, var, mse))
+    if num_anchor == num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], num_points_upper_threshold))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+    elif num_anchor < num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], num_anchor))
+            idx_orig = np.arange(min(meta[i], num_points_upper_threshold))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+
+    return np.mean(all_dist), np.var(all_dist), np.sum(all_dist**2)
+
+def dist_vis(recon, orig, meta, num_points_upper_threshold=200):
+    batch_size = recon.shape[0]
+    num_anchor = recon.shape[1]
+    num_points = orig.shape[1]
+    num_patition = num_points // num_anchor
+
+    all_dist = np.empty([0])
+    if num_anchor == num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], num_points_upper_threshold))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+    elif num_anchor < num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], num_anchor))
+            idx_orig = np.arange(min(meta[i], num_points_upper_threshold))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+
     pd.DataFrame(all_dist).plot(kind='density')
     plt.savefig('dist_distribution')
     plt.close()
+
+
+def create_dir(dir_path):
+    ''' Creates a directory (or nested directories) if they don't exist.
+    '''
+    if not osp.exists(dir_path):
+        os.makedirs(dir_path)
+
+    return dir_path

@@ -12,6 +12,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from multiprocessing import Pool
 
 from util import *
+from sklearn import linear_model, datasets
 
 
 def sub2ind(array_shape, rows, cols):
@@ -28,19 +29,22 @@ def ind2sub(array_shape, ind):
     coordinates = np.concatenate([rows, cols], axis =-1)
     return coordinates
 
-def get_cellmap_from_points(velo_frame, cell_per_meter=5, cellmap_radius=30):
+def rough_LBS(points):
+    ransac = linear_model.RANSACRegressor()
+    ransac.fit(points[:,0:2], points[:,2])
+    inlier_mask = ransac.inlier_mask_
+    outlier_mask = np.logical_not(inlier_mask)
+    background_points = points[inlier_mask, 0:3]
+    foreground_points = points[outlier_mask, 0:3]
+
+def get_cellmap_from_raw_points(raw_points, cell_per_meter=1, cellmap_radius=30):
     
     cellmap_size = 2*cell_per_meter*cellmap_radius
-
-    foreground_index = np.argwhere(velo_frame[:,2] >= -1)
-    foreground_points = np.squeeze(velo_frame[foreground_index,:], 1)
-    backgroud_index = np.argwhere(velo_frame[:,2] < -1)
-    backgroud_points = np.squeeze(velo_frame[backgroud_index,:], 1)
     
     # Extract foreground points within cellmap
-    index_within_xm = (abs(foreground_points[:, 0]) < cellmap_radius) &  (abs(foreground_points[:, 1]) < cellmap_radius);
-    foreground_points_within_cellmap = foreground_points[index_within_xm, :]
-    cell_id_2d = cellmap_radius*cell_per_meter + np.ceil(foreground_points_within_cellmap[:, 0:2]*cell_per_meter)
+    index_within_cellmap = (abs(raw_points[:, 0]) < cellmap_radius) &  (abs(raw_points[:, 1]) < cellmap_radius);
+    points_within_cellmap = raw_points[index_within_cellmap, :]
+    cell_id_2d = cellmap_radius*cell_per_meter + np.floor(points_within_cellmap[:, 0:2]*cell_per_meter)
 
     cell_id = sub2ind([cellmap_size, cellmap_size], cell_id_2d[:,0], cell_id_2d[:,1])
     cell_id_unique = np.unique(cell_id) 
@@ -48,11 +52,11 @@ def get_cellmap_from_points(velo_frame, cell_per_meter=5, cellmap_radius=30):
     cellmap = {}
     for i_cell in cell_id_unique:
         cell_id_index = (cell_id == i_cell)
-        cellmap[i_cell] = foreground_points_within_cellmap[cell_id_index, :]
+        cellmap[i_cell] = points_within_cellmap[cell_id_index, :]
 
     return cellmap
 
-def get_points_from_cellmap(cellmap, cell_per_meter=5, cellmap_radius=30, num_points_lower_threshold = 50):
+def get_points_from_cellmap(cellmap, cell_per_meter=1, cellmap_radius=30, num_points_lower_threshold = 50):
 
     points = None
     for i_cell in cellmap.keys():
@@ -137,9 +141,12 @@ def rescale(point_clouds, meta, num_points_upper_threshold=200):
     return point_scaled, point_mean
 
 
-def load_pc_data(batch_size, n_threads=16, shuffle=True):
+def load_pc_data(batch_size, train=True, n_threads=16, shuffle=True):
     date = '2011_09_26'
-    drive = '0001'
+    if train == True:
+        drive = '0001'
+    else:
+        drive = '0002'
     basedir = '/scratch2/sniu/kitti'
     num_points_upper_threshold = 200
 
@@ -156,7 +163,7 @@ def load_pc_data(batch_size, n_threads=16, shuffle=True):
 
     print ('------ loading pointnet data ------')
     pool = Pool(n_threads)
-    for i, cellmap in enumerate(pool.imap(get_cellmap_from_points, dataset_velo)):
+    for i, cellmap in enumerate(pool.imap(get_cellmap_from_raw_points, dataset_velo)):
         batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
 
         all_points = np.concatenate([all_points, batch_points], axis=0)
@@ -173,6 +180,22 @@ def load_pc_data(batch_size, n_threads=16, shuffle=True):
     # all_points, all_mean = rescale(all_points, all_meta, num_points_upper_threshold=num_points_upper_threshold)
 
     return all_points, all_meta, all_centroids
+
+def reconstruct_points_from_batch_data(batch_data, meta_data):
+    all_points = None
+    batch_size = batch_data.shape[0]
+    for i_batch in range(batch_size):
+
+        real_number_points = meta_data['number_points'][i_batch]
+        batch_points = batch_data[i_batch, :real_number_points, :]
+
+        points = batch_points + meta_data['centroids'][i_batch]
+        if all_points is None:
+            all_points = points
+        else:
+            all_points = np.concatenate([all_points, points])
+        
+    return all_points
 
 def visualize_3d_points(points, num=1000000):
     num = min(points.shape[0], num)

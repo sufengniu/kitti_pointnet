@@ -11,6 +11,8 @@ import data
 import os
 import os.path as osp
 
+from sklearn.cluster import KMeans
+
 from external.structural_losses.tf_nndistance import nn_distance
 from external.structural_losses.tf_approxmatch import approx_match, match_cost
 
@@ -20,7 +22,7 @@ FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 
 # Training options.
-tf.flags.DEFINE_string("top_out_dir", "/scratch1/sniu/point_cloud/checkpoints",
+tf.flags.DEFINE_string("top_out_dir", "/scratch2/sniu/point_cloud/checkpoints",
                        "Checkpointing directory.")
 tf.flags.DEFINE_string("top_in_dir", "/scratch2/sniu/point_cloud/shape_net_core_uniform_samples_2048/",
                        "data input dir")
@@ -32,7 +34,7 @@ tf.flags.DEFINE_string("loss", "chamfer",
                        "loss type [chamfer|emd]")
 tf.flags.DEFINE_integer("num_points", 200,
                        "number of points in point cloud")
-tf.flags.DEFINE_integer("batch_size", 512,
+tf.flags.DEFINE_integer("batch_size", 128,
                        "batch size")
 tf.flags.DEFINE_integer("latent_dim", 128,
                        "latent code dimension")
@@ -63,17 +65,7 @@ BN_DECAY_DECAY_RATE = 0.5
 BN_DECAY_DECAY_STEP = float(DECAY_STEP)
 BN_DECAY_CLIP = 0.99
 
-train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
-
-def get_learning_rate(batch):
-    learning_rate = tf.train.exponential_decay(
-                        FLAGS.learning_rate,  # Base learning rate.
-                        batch * batch_size,  # Current index into the dataset.
-                        DECAY_STEP,          # Decay step.
-                        DECAY_RATE,          # Decay rate.
-                        staircase=True)
-    learning_rate = tf.maximum(learning_rate, 0.00001) # CLIP THE LEARNING RATE!
-    return learning_rate    
+train_dir = osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss))
 
 def get_bn_decay(batch):
     bn_momentum = tf.train.exponential_decay(
@@ -86,7 +78,7 @@ def get_bn_decay(batch):
     return bn_decay
 
 
-def train():
+def eval():
     # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
     gt = tf.placeholder(tf.float32, [None, origin_num_points, 3])
     meta = tf.placeholder(tf.int32, [None])
@@ -153,65 +145,89 @@ def train():
 
     # reg_losses = self.graph.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
 
-    learning_rate = get_learning_rate(batch)
-    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
-    train_op = optimizer.minimize(reconstruction_loss, global_step=batch)
     sess = tf.InteractiveSession()
     saver = tf.train.Saver()
+    tf.global_variables_initializer().run()
+    saver.restore(sess, train_dir + '/model_%s.ckpt' % (str(4990)))
+
+    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, train=False)
+
+    record_loss = []
+    record_mean, record_var, record_mse = [], [], []
+
+    for j in range(all_pc_data.shape[0]//batch_size):
+        X_pc, X_meta = all_pc_data[j*batch_size:(j+1)*batch_size], all_meta_data[j*batch_size:(j+1)*batch_size]
+        emd_loss, recon = sess.run([reconstruction_loss, x_reconstr], feed_dict={gt: X_pc, meta: X_meta, is_training: False})
+        record_loss.append(emd_loss)
+        print ("loss: {}".format(emd_loss))
+        mean, var, mse = tf_util.dist_stat(recon, X_pc, X_meta)
+        record_mean.append(mean)
+        record_var.append(var)
+        record_mse.append(mse)
+    print (np.array(record_loss).mean())
+    print (np.array(record_mean).mean(), np.array(record_var).mean(), np.array(record_mse).mean())
+
+    tf_util.dist_vis(recon, X_pc, X_meta)
+
+
+
+def eval_baseline():
+    # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
+    gt = tf.placeholder(tf.float32, [None, origin_num_points, 3])
+    meta = tf.placeholder(tf.int32, [None])
+    is_training = tf.placeholder(tf.bool, shape=())
+
+    mask = tf.sequence_mask(meta, maxlen=origin_num_points, dtype=tf.float32)
+    mask = tf.expand_dims(mask, -1)
+
+
+    #  -------  loss + optimization  ------- 
+    num_anchors = 32
+    sample_index = tf.random_uniform([num_anchors], minval=0, maxval=origin_num_points, dtype=tf.int32)
+    x_subsample = tf.gather(gt, sample_index, axis=1)
+    cost_p1_p2_rand, _, cost_p2_p1_rand, _ = nn_distance(x_subsample, gt)
+    sample_loss = tf.reduce_mean(cost_p1_p2_rand) + tf.reduce_mean(cost_p2_p1_rand)
+
+    kmeans_center = tf.placeholder(tf.float32, [batch_size, num_anchors, 3])
+    cost_p1_p2_kmeans, _, cost_p2_p1_kmeans, _ = nn_distance(kmeans_center, gt)
+    kmeans_loss = tf.reduce_mean(cost_p1_p2_kmeans) + tf.reduce_mean(cost_p2_p1_kmeans)
+
+    sess = tf.InteractiveSession()
     tf.global_variables_initializer().run()
 
     all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size)
 
-    record_loss = []
-    for i in range(num_epochs):
-        record_mean, record_var, record_mse = [], [], []
-        for j in range(all_pc_data.shape[0]//batch_size):
-            X_pc, X_meta = all_pc_data[j*batch_size:(j+1)*batch_size], all_meta_data[j*batch_size:(j+1)*batch_size]
-            _, emd_loss, recon = sess.run([train_op, reconstruction_loss, x_reconstr], feed_dict={gt: X_pc, meta: X_meta, is_training: True})
-            record_loss.append(emd_loss)
-            mean, var, mse = tf_util.dist_stat(recon, X_pc, X_meta)
-            record_mean.append(mean)
-            record_var.append(var)
-            record_mse.append(mse)
 
-        data.shuffle_data(all_pc_data, all_meta_data)
-
-        if i % 10 == 0:
-            print ("iteration: {}, loss: {}".format(i, emd_loss))
-            print ("mean: %.6f, var: %.6f, mse: %.6f" % (np.array(record_mean).mean(), np.array(record_var).mean(), np.array(record_mse).mean()))
-            print ("sample mean: %.6f, var: %.6f, mse: %.6f\n" % (record_mean[-1], record_var[-1], record_mse[-1]))
-            saver.save(sess, train_dir + '/model_%s.ckpt' % (str(i)))
-            
-    tf_util.dist_vis(recon, X_pc, X_meta)
-
-
-train()
-
-
-# for i in range(10):
-#     pc_visual = recon
-#     fig = plt.figure()
-#     ax = Axes3D(fig)
-#     ax.scatter(pc_visual[i,:,0], pc_visual[i,:,1], pc_visual[i,:,2], 'ro')
-#     ax.scatter(X_pc[i,:,0], X_pc[i,:,1], X_pc[i,:,2], 'bo')
-#     plt.savefig('imgs/gen_%d.png' % (i), dpi=80)
+    # kmeans
+    record_sample_loss, record_cluster_loss = [], []
+    record_mean_cluster, record_var_cluster, record_mse_cluster = [], [], []
+    record_mean_random, record_var_random, record_mse_random = [], [], []
+    # for j in range(all_pc_data.shape[0]//batch_size):
+    for j in range(100):
+        X_pc, X_meta = all_pc_data[j*batch_size:(j+1)*batch_size], all_meta_data[j*batch_size:(j+1)*batch_size]
+        center = []
+        for i_batch in range(X_pc.shape[0]):
+            kmeans = KMeans(n_clusters=num_anchors, random_state=0).fit(X_pc[i_batch,:,:])
+            center.append(kmeans.cluster_centers_)
+        center = np.stack(center)
+        random_loss, cluster_loss, recon_sample = sess.run([sample_loss, kmeans_loss, x_subsample], feed_dict={gt: X_pc, kmeans_center: center, is_training: False})
+        record_cluster_loss.append(cluster_loss)
+        record_sample_loss.append(random_loss)
+        mean_cluster, var_cluster, mse_cluster = tf_util.dist_stat(center, X_pc, X_meta)
+        mean_random, var_random, mse_random = tf_util.dist_stat(recon_sample, X_pc, X_meta)
+        record_mean_cluster.append(mean_cluster)
+        record_var_cluster.append(var_cluster)
+        record_mse_cluster.append(mse_cluster)
+        record_mean_random.append(mean_random)
+        record_var_random.append(var_random)
+        record_mse_random.append(mse_random)
+        
+    print (np.array(record_cluster_loss).mean())
+    print (np.array(record_sample_loss).mean())
+    print (np.array(record_mean_cluster).mean(), np.array(record_var_cluster).mean(), np.array(record_mse_cluster).mean())
+    print (np.array(record_mean_random).mean(), np.array(record_var_random).mean(), np.array(record_mse_random).mean())
 
 
-# record_loss = []
-# for i in range(num_epochs):
-#    # X = tf_util.generate_pc_data(batch_size) # load real dataset
-#    X = tf_util.generate_batch_data(batch_size, origin_num_points)
-#    _, emd_loss, recon, mu_recon = sess.run([train_op, reconstruction_loss, x_reconstr, mu_reconstr], feed_dict={gt: X, is_training: True})
-#    record_loss.append(emd_loss)
-#    if i % 10 == 0:
-#      print ("iteration: {}, loss: {}".format(i, emd_loss))
 
-# fig = plt.figure()
-# plt.plot(X[0,:,0], X[0,:,1], 'bs', mu_recon[0,:,0], mu_recon[0,:,1], 'ro')
-# plt.savefig('orig')
-# plt.close()
-
-# fig = plt.figure()
-# plt.plot(recon[0,:,0], recon[0,:,1], 'bs', mu_recon[0,:,0], mu_recon[0,:,1], 'ro')
-# plt.savefig('recon')
-# plt.close()
+# eval()
+eval_baseline()
