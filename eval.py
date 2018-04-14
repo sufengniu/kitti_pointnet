@@ -22,7 +22,7 @@ FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 
 # Training options.
-tf.flags.DEFINE_string("top_out_dir", "/scratch2/sniu/point_cloud/checkpoints",
+tf.flags.DEFINE_string("top_out_dir", "/scratch3/sniu/point_cloud/checkpoints",
                        "Checkpointing directory.")
 tf.flags.DEFINE_string("top_in_dir", "/scratch2/sniu/point_cloud/shape_net_core_uniform_samples_2048/",
                        "data input dir")
@@ -32,6 +32,8 @@ tf.flags.DEFINE_string("decoder", "fc",
                        "decoder type [fc|grid]")
 tf.flags.DEFINE_string("loss", "chamfer",
                        "loss type [chamfer|emd]")
+tf.flags.DEFINE_integer("split_mode", 3,
+                       "0: foreground, 1: background, 2: all points, 3: kmeans on foreground")
 tf.flags.DEFINE_integer("num_points", 200,
                        "number of points in point cloud")
 tf.flags.DEFINE_integer("batch_size", 128,
@@ -50,7 +52,7 @@ tf.flags.DEFINE_float("learning_rate", 0.001,
 
 # Data setting
 batch_size = FLAGS.batch_size
-origin_num_points = FLAGS.num_points
+origin_num_points = 800 if FLAGS.split_mode==3 else FLAGS.num_points
 k = FLAGS.top_k
 latent_dim = FLAGS.latent_dim
 # Tensorflow code below
@@ -65,7 +67,14 @@ BN_DECAY_DECAY_RATE = 0.5
 BN_DECAY_DECAY_STEP = float(DECAY_STEP)
 BN_DECAY_CLIP = 0.99
 
-train_dir = osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss))
+if FLAGS.split_mode == 0:
+    train_dir = osp.join(FLAGS.top_out_dir, "f_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss))
+elif FLAGS.split_mode == 1:
+     train_dir = osp.join(FLAGS.top_out_dir, "b_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss))
+elif FLAGS.split_mode == 2:
+     train_dir = osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss))
+elif FLAGS.split_mode == 3:
+     train_dir = osp.join(FLAGS.top_out_dir, "kmeans_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss))
 
 def get_bn_decay(batch):
     bn_momentum = tf.train.exponential_decay(
@@ -148,9 +157,9 @@ def eval():
     sess = tf.InteractiveSession()
     saver = tf.train.Saver()
     tf.global_variables_initializer().run()
-    saver.restore(sess, train_dir + '/model_%s.ckpt' % (str(4990)))
+    saver.restore(sess, train_dir + '/model_%s.ckpt' % (str(180)))
 
-    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, train=False)
+    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, train=True, split_mode=FLAGS.split_mode)
 
     record_loss = []
     record_mean, record_var, record_mse = [], [], []
@@ -182,7 +191,7 @@ def eval_baseline():
 
 
     #  -------  loss + optimization  ------- 
-    num_anchors = 32
+    num_anchors = 43
     sample_index = tf.random_uniform([num_anchors], minval=0, maxval=origin_num_points, dtype=tf.int32)
     x_subsample = tf.gather(gt, sample_index, axis=1)
     cost_p1_p2_rand, _, cost_p2_p1_rand, _ = nn_distance(x_subsample, gt)
@@ -195,7 +204,7 @@ def eval_baseline():
     sess = tf.InteractiveSession()
     tf.global_variables_initializer().run()
 
-    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size)
+    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, train=True)
 
 
     # kmeans

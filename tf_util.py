@@ -682,7 +682,7 @@ def fully_connected_decoder(net, num_points, is_training, bn_decay=None):
                       activation_fn=tf.nn.relu)
    net = fully_connected(net, num_points*3, scope='fc3', bn=True,  
                       bn_decay=bn_decay, is_training=is_training,
-                      activation_fn=tf.nn.tanh)
+                      activation_fn=None)
 
    net = tf.reshape(net, [-1, num_points, 3])
 

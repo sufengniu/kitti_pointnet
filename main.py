@@ -20,7 +20,7 @@ FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 
 # Training options.
-tf.flags.DEFINE_string("top_out_dir", "/scratch1/sniu/point_cloud/checkpoints",
+tf.flags.DEFINE_string("top_out_dir", "/scratch3/sniu/point_cloud/checkpoints",
                        "Checkpointing directory.")
 tf.flags.DEFINE_string("top_in_dir", "/scratch2/sniu/point_cloud/shape_net_core_uniform_samples_2048/",
                        "data input dir")
@@ -30,6 +30,8 @@ tf.flags.DEFINE_string("decoder", "fc",
                        "decoder type [fc|grid]")
 tf.flags.DEFINE_string("loss", "chamfer",
                        "loss type [chamfer|emd]")
+tf.flags.DEFINE_integer("split_mode", 3,
+                       "0: foreground, 1: background, 2: all points, 3: kmeans on foreground")
 tf.flags.DEFINE_integer("num_points", 200,
                        "number of points in point cloud")
 tf.flags.DEFINE_integer("batch_size", 512,
@@ -48,7 +50,7 @@ tf.flags.DEFINE_float("learning_rate", 0.001,
 
 # Data setting
 batch_size = FLAGS.batch_size
-origin_num_points = FLAGS.num_points
+origin_num_points = 800 if FLAGS.split_mode==3 else FLAGS.num_points
 k = FLAGS.top_k
 latent_dim = FLAGS.latent_dim
 # Tensorflow code below
@@ -63,7 +65,14 @@ BN_DECAY_DECAY_RATE = 0.5
 BN_DECAY_DECAY_STEP = float(DECAY_STEP)
 BN_DECAY_CLIP = 0.99
 
-train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+if FLAGS.split_mode == 0:
+    train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "f_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+elif FLAGS.split_mode == 1:
+     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "b_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+elif FLAGS.split_mode == 2:
+     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+elif FLAGS.split_mode == 3:
+     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "kmeans_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
 
 def get_learning_rate(batch):
     learning_rate = tf.train.exponential_decay(
@@ -100,7 +109,17 @@ def train():
     mask = tf.expand_dims(mask, -1)
 
     if FLAGS.encoder == "edge":
-        input_image = gt
+        def body(net_in):
+            row_idx = tf.range(net_in[1])
+            col_idx_tmp = tf.expand_dims(tf.zeros_like(row_idx), -1)
+            col_idx = tf.concat([col_idx_tmp, col_idx_tmp+1, col_idx_tmp+2], -1)
+            img = net_in[0]
+            row_idx = tf.tile(tf.expand_dims(row_idx, -1), [1, 3])
+            idx = tf.stack([row_idx, col_idx])
+            idx = tf.transpose(idx, [1,2,0])
+            return tf.gather_nd(img, idx)
+        input_image = tf.map_fn(body, (gt, meta), tf.float32)
+
         adj_matrix = tf_util.pairwise_distance(input_image)
         nn_idx = tf_util.knn(adj_matrix, k=k)
 
@@ -117,8 +136,7 @@ def train():
         net = gt
         net = tf_util.point_conv(net, "encoder_1", is_training, n_filters=64, bn_decay=bn_decay)
         net = tf_util.point_conv(net, "encoder_2", is_training, n_filters=latent_dim, bn_decay=bn_decay)
-
-    net = net * mask
+        net = net * mask
 
     # max pool
     code = tf.reduce_max(net, axis=-2, keepdims=False)
@@ -160,7 +178,7 @@ def train():
     saver = tf.train.Saver()
     tf.global_variables_initializer().run()
 
-    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size)
+    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, split_mode=FLAGS.split_mode)
 
     record_loss = []
     for i in range(num_epochs):
