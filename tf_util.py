@@ -682,7 +682,7 @@ def fully_connected_decoder(net, num_points, is_training, bn_decay=None):
                       activation_fn=tf.nn.relu)
    net = fully_connected(net, num_points*3, scope='fc3', bn=True,  
                       bn_decay=bn_decay, is_training=is_training,
-                      activation_fn=None)
+                      activation_fn=tf.nn.tanh)
 
    net = tf.reshape(net, [-1, num_points, 3])
 
@@ -877,7 +877,6 @@ def dist_vis(recon, orig, meta, num_points_upper_threshold=200):
     batch_size = recon.shape[0]
     num_anchor = recon.shape[1]
     num_points = orig.shape[1]
-    num_patition = num_points // num_anchor
 
     all_dist = np.empty([0])
     if num_anchor == num_points:
@@ -897,6 +896,23 @@ def dist_vis(recon, orig, meta, num_points_upper_threshold=200):
     pd.DataFrame(all_dist).plot(kind='density')
     plt.savefig('dist_distribution')
     plt.close()
+
+def dist_octree_stat(recon, orig, meta, num_points_upper_threshold=200):
+    batch_size = len(recon)
+    num_anchor = np.array([recon[i].shape[0] for i in range(batch_size)])
+    num_points = orig.shape[1]
+
+    all_dist = np.empty([0])
+    for i in range(batch_size):
+        if recon[i].shape[0] == 0:
+            continue
+        idx = np.arange(min(meta[i], num_anchor[i]))
+        idx_orig = np.arange(min(meta[i], num_points_upper_threshold))
+        dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i][idx])
+        dist_vec = np.min(dist_tmp, 1) # [num_points]
+        all_dist = np.concatenate([all_dist, dist_vec])
+
+    return np.mean(all_dist), np.var(all_dist), np.sum(all_dist**2)
 
 
 def create_dir(dir_path):

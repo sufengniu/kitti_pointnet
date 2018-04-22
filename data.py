@@ -1,11 +1,15 @@
 import numpy as np
 import tensorflow as tf
+import sys
 import os
 import os.path as osp
 import pandas as pd
 
 from functools import partial
 from itertools import repeat
+
+sys.path.append('./octnet/py/')
+import pyoctnet
 
 import matplotlib
 matplotlib.use('Agg')
@@ -14,6 +18,11 @@ from mpl_toolkits.mplot3d import Axes3D
 
 from multiprocessing import Pool
 
+import scipy
+from scipy import ndimage
+from scipy.sparse import coo_matrix
+
+from octree import octree_func
 from util import *
 from sklearn import linear_model, datasets
 from sklearn.cluster import KMeans
@@ -44,14 +53,14 @@ def rough_LBS(points):
     foreground_points = points[outlier_mask, 0:3]
     return foreground_points, background_points
 
-def get_cluster_cellmap_from_raw_points(raw_points, n_threads=16, cluster_mode="dirichlet"):
+def get_cluster_cellmap_from_raw_points(raw_points, n_threads=16, cluster_mode="kmeans", seeds=[1,22123,3010,4165]):
 
     # affinity = 'rbf'
     affinity = 'nearest_neighbors'
     num_neighbors = 20
     num_cluster = 64
     # seeds = [1,22123,3010,4165,54329,62,7656,80109212] # for better generalization
-    seeds = [1,22123,3010,4165] # for better generalization
+     # for better generalization
     cluster_idx = range(num_cluster)
     cellmap = {}
     for s in range(len(seeds)):
@@ -71,7 +80,7 @@ def get_cluster_cellmap_from_raw_points(raw_points, n_threads=16, cluster_mode="
             cellmap[s*num_cluster+i] = raw_points[idx]
     return cellmap
 
-def get_cellmap_from_raw_points(raw_points, n_threads=16, split_mode=0, cell_per_meter=1, cellmap_radius=30):
+def get_cellmap_from_raw_points(raw_points, n_threads=16, split_mode=0, cluster_mode='kmeans', cell_per_meter=1, cellmap_radius=30):
     
     foreground_points, background_points = rough_LBS(raw_points)
     if split_mode == 0:
@@ -81,7 +90,7 @@ def get_cellmap_from_raw_points(raw_points, n_threads=16, split_mode=0, cell_per
     elif split_mode == 2:
         point = raw_points
     elif split_mode == 3:
-        return get_cluster_cellmap_from_raw_points(foreground_points, n_threads)
+        return get_cluster_cellmap_from_raw_points(foreground_points, n_threads, cluster_mode=cluster_mode)
     cellmap_size = 2*cell_per_meter*cellmap_radius
     
     # Extract foreground points within cellmap
@@ -98,6 +107,27 @@ def get_cellmap_from_raw_points(raw_points, n_threads=16, split_mode=0, cell_per
         cellmap[i_cell] = points_within_cellmap[cell_id_index, :]
 
     return cellmap
+
+def get_octree_center(raw_points, meta, octree_depth=2, num_points_lower_threshold=10, num_points_upper_threshold=200):
+    centers = []
+    for i in range(raw_points.shape[0]):
+        point = raw_points[i, range(min(meta[i], num_points_upper_threshold)), :]
+
+        world_size = max(point[:,0].max()-point[:,0].min(), point[:,1].max()-point[:,1].min(), point[:,2].max()-point[:,2].min())
+        origin = point.mean(axis=0)
+        octree_dict = {}
+        point_set = tuple(map(tuple, point))
+        octree_func(octree_dict, point_set, num_points_upper_threshold, octree_depth, world_size, origin)
+
+        octree_center = []
+        for key, value in octree_dict.items():
+            if key[0] == octree_depth-1:
+                point_subspace = point[np.asarray(value, dtype=np.int32),:]
+                octree_center.append(point_subspace.mean(axis=0))
+        octree_center = np.array(octree_center)
+        centers.append(octree_center)
+    return centers
+
 
 def get_points_from_cellmap(cellmap, cell_per_meter=1, cellmap_radius=30, num_points_lower_threshold = 50):
 
@@ -180,12 +210,12 @@ def rescale(point_clouds, num_points, num_points_upper_threshold=200):
     return point_scaled
 
 
-def load_pc_data(batch_size, train=True, split_mode=3, n_threads=16, shuffle=True):
+def load_pc_data(batch_size, train=True, split_mode=3, cluster_mode='kmeans', n_threads=16, shuffle=True):
     date = '2011_09_26'
     if train == True:
         drive = '0001'
     else:
-        drive = '0002'
+        drive = '0005'
     basedir = '/scratch2/sniu/kitti'
     if split_mode == 3:
         num_points_upper_threshold = 1024
@@ -210,8 +240,8 @@ def load_pc_data(batch_size, train=True, split_mode=3, n_threads=16, shuffle=Tru
     print ('------ loading pointnet data ------')
     if split_mode == 3: # very large memory consumption when use multi-process
         for i in range(len(dataset_velo)):
-            print ("finished kmeans on batch %d" % i)
-            cellmap = get_cellmap_from_raw_points(dataset_velo[i], n_threads=n_threads, split_mode=split_mode)
+            print ("finished clustering on batch %d" % i)
+            cellmap = get_cellmap_from_raw_points(dataset_velo[i], n_threads=n_threads, split_mode=split_mode, cluster_mode=cluster_mode)
             batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
             batch_points = rescale(batch_points, batch_meta['number_points'], num_points_upper_threshold)
             all_points = np.concatenate([all_points, batch_points], axis=0)
@@ -220,9 +250,8 @@ def load_pc_data(batch_size, train=True, split_mode=3, n_threads=16, shuffle=Tru
     else:
         pool = Pool(n_threads)
         for i, cellmap in enumerate(pool.imap(partial(get_cellmap_from_raw_points, split_mode=split_mode), dataset_velo)):
-            print ("finished kmeans on batch %d" % i)
             batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
-
+            # batch_points = rescale(batch_points, batch_meta['number_points'], num_points_upper_threshold)
             all_points = np.concatenate([all_points, batch_points], axis=0)
             all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
             all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
@@ -238,24 +267,53 @@ def load_pc_data(batch_size, train=True, split_mode=3, n_threads=16, shuffle=Tru
 
     return all_points, all_meta, all_centroids
 
+def load_pc_octree_data(batch_size, train=True, split_mode=0, n_threads=16, octree_depth=3, shuffle=True):
+    date = '2011_09_26'
+    if train == True:
+        drive = '0001'
+    else:
+        drive = '0005'
+    basedir = '/scratch2/sniu/kitti'
+
+    num_points_upper_threshold = 200
+
+    dataset = load_dataset(date, drive, basedir)
+
+    dataset_velo = list(dataset.velo)
+    all_points = np.empty([0, num_points_upper_threshold, dataset_velo[0].shape[1]-1], dtype=np.float32)
+    all_centroids = np.empty([0, dataset_velo[0].shape[1]-1], dtype=np.float32)
+    all_meta = np.empty([0], dtype=np.int32)
+
+    for i in range(len(dataset_velo)):
+        cellmap = get_cellmap_from_raw_points(dataset_velo[i], n_threads=n_threads, split_mode=0)
+        batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
+
+        all_points = np.concatenate([all_points, batch_points], axis=0)
+        all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
+        all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
+
+    return all_points, all_meta, all_centroids
+
+
 def load_orig_pc_data(batch_size, train=True, n_threads=16, shuffle=True):
     date = '2011_09_26'
     if train == True:
         drive = '0001'
     else:
-        drive = '0002'
+        drive = '0005'
     basedir = '/scratch2/sniu/kitti'
 
     dataset = load_dataset(date, drive, basedir)
     # for visualization
     tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
     frame = 10 # for visualization
-    display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame, points=0.8)
+    display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame, points=1.0) # original plot
 
+    dataset_gray = list(dataset.gray)
+    dataset_rgb = list(dataset.rgb)
     all_points = list(dataset.velo)
 
-    return all_points
-
+    return all_points, dataset_gray, dataset_rgb, tracklet_rects, tracklet_types
 
 
 def reconstruct_points_from_batch_data(batch_data, meta_data):
@@ -275,9 +333,77 @@ def reconstruct_points_from_batch_data(batch_data, meta_data):
     return all_points
 
 def visualize_3d_points(points, num=1000000, file_name='sample'):
-    num = min(points.shape[0], num)
     fig = plt.figure()
+    num = min(points.shape[0], num)
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(points[:num, 0], points[:num, 1], points[:num, 2], c='r', marker='.')
     plt.axis('equal')
     plt.savefig(file_name)
+
+def visualize_recon_points(points, recon, num=1000000, file_name='sample'):
+    fig = plt.figure()
+    num = min(points.shape[0], num)
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(points[:num, 0], points[:num, 1], points[:num, 2], c='r', marker='.')
+    ax.scatter(recon[:num, 0], recon[:num, 1], recon[:num, 2], c='b', marker='.')
+    plt.axis('equal')
+    plt.savefig(file_name)
+
+
+# def get_cellmap_from_raw_points(raw_points, cell_per_meter=1, cellmap_radius=30):
+
+#     cellmap_size = 2*cell_per_meter*cellmap_radius
+
+#     # Extract foreground points within cellmap
+#     index_within_cellmap = (abs(raw_points[:, 0]) < cellmap_radius) &  (abs(raw_points[:, 1]) < cellmap_radius);
+#     points_within_cellmap = raw_points[index_within_cellmap, :]
+#     cell_id_2d = cellmap_radius*cell_per_meter + np.floor(points_within_cellmap[:, 0:2]*cell_per_meter)
+
+#     row = cell_id_2d[:,0]
+#     column = cell_id_2d[:,1]
+#     cellmap_matrix = coo_matrix((np.ones_like(row), (row, column)), shape=(cellmap_size, cellmap_size)).toarray()
+
+#     cell_id = sub2ind([cellmap_size, cellmap_size], cell_id_2d[:,0], cell_id_2d[:,1])
+#     cell_id_unique = np.unique(cell_id) 
+
+#     cellmap = {}
+#     for i_cell in cell_id_unique:
+#         cell_id_index = (cell_id == i_cell)
+#         cellmap[i_cell] = points_within_cellmap[cell_id_index, :]
+
+#     return cellmap, cell_id_2d, cell_id, points_within_cellmap, cellmap_matrix
+
+def find_connected_components(cellmap_matrix, blur_radius = 0.5, threshold = 0.1):
+    img = (cellmap_matrix!=0).astype(float) 
+    imgf = ndimage.gaussian_filter(img, blur_radius)
+    labeled, nr_objects = ndimage.label(imgf > threshold) 
+    components = labeled * (cellmap_matrix!=0)
+    return components, nr_objects
+
+def find_component_points(components, nr_objects):
+
+    component_points = []
+    for i_object in range(1,nr_objects+1):
+        cell_ids = np.where(components == i_object)
+        cell_nums = cell_ids[0].shape[0]
+        rows = []
+        columns = []
+        for i_cell in range(cell_nums):
+            rows.append(cell_ids[0][i_cell])
+            columns.append(cell_ids[1][i_cell])
+
+        rows = np.stack(rows)
+        columns = np.stack(columns)
+        cell_ids_1D = sub2ind([cellmap_size, cellmap_size], rows, columns)
+
+        points = None
+        for cell_id_1D in cell_ids_1D:
+            if points is None:
+                points = cellmap[cell_id_1D]
+            else:
+                points = np.concatenate((points, cellmap[cell_id_1D]), axis=0)
+
+        component_points.append(points)
+
+    return component_points
+

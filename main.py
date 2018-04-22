@@ -20,7 +20,7 @@ FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 
 # Training options.
-tf.flags.DEFINE_string("top_out_dir", "/scratch3/sniu/point_cloud/checkpoints",
+tf.flags.DEFINE_string("top_out_dir", "/scratch1/sniu/point_cloud/checkpoints",
                        "Checkpointing directory.")
 tf.flags.DEFINE_string("top_in_dir", "/scratch2/sniu/point_cloud/shape_net_core_uniform_samples_2048/",
                        "data input dir")
@@ -30,13 +30,15 @@ tf.flags.DEFINE_string("decoder", "fc",
                        "decoder type [fc|grid]")
 tf.flags.DEFINE_string("loss", "chamfer",
                        "loss type [chamfer|emd]")
-tf.flags.DEFINE_integer("split_mode", 3,
-                       "0: foreground, 1: background, 2: all points, 3: kmeans on foreground")
+tf.flags.DEFINE_integer("split_mode", 0,
+                       "0: foreground, 1: background, 2: all points, 3: clustering on foreground")
+tf.flags.DEFINE_string("cluster_mode", 'kmeans',
+                       "kmeans, spectral, dirichlet")
 tf.flags.DEFINE_integer("num_points", 200,
                        "number of points in point cloud")
 tf.flags.DEFINE_integer("batch_size", 512,
                        "batch size")
-tf.flags.DEFINE_integer("latent_dim", 128,
+tf.flags.DEFINE_integer("latent_dim", 21,
                        "latent code dimension")
 tf.flags.DEFINE_integer("top_k", 10,
                        "number of sampling points in sampling mode")
@@ -47,10 +49,9 @@ tf.flags.DEFINE_integer("decay_step", 200000,
 tf.flags.DEFINE_float("learning_rate", 0.001,
                       "learning rate")
 
-
 # Data setting
 batch_size = FLAGS.batch_size
-origin_num_points = 800 if FLAGS.split_mode==3 else FLAGS.num_points
+origin_num_points = 1024 if FLAGS.split_mode==3 else FLAGS.num_points
 k = FLAGS.top_k
 latent_dim = FLAGS.latent_dim
 # Tensorflow code below
@@ -72,7 +73,7 @@ elif FLAGS.split_mode == 1:
 elif FLAGS.split_mode == 2:
      train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
 elif FLAGS.split_mode == 3:
-     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "kmeans_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s_%s" % (FLAGS.cluster_mode, FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
 
 def get_learning_rate(batch):
     learning_rate = tf.train.exponential_decay(
@@ -174,11 +175,11 @@ def train():
     learning_rate = get_learning_rate(batch)
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
     train_op = optimizer.minimize(reconstruction_loss, global_step=batch)
-    sess = tf.InteractiveSession()
+    sess = tf.Session()
     saver = tf.train.Saver()
-    tf.global_variables_initializer().run()
+    sess.run(tf.global_variables_initializer())
 
-    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, split_mode=FLAGS.split_mode)
+    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, split_mode=FLAGS.split_mode, cluster_mode=FLAGS.cluster_mode)
 
     record_loss = []
     for i in range(num_epochs):
@@ -197,11 +198,10 @@ def train():
         if i % 10 == 0:
             print ("iteration: {}, loss: {}".format(i, emd_loss))
             print ("mean: %.6f, var: %.6f, mse: %.6f" % (np.array(record_mean).mean(), np.array(record_var).mean(), np.array(record_mse).mean()))
-            print ("sample mean: %.6f, var: %.6f, mse: %.6f\n" % (record_mean[-1], record_var[-1], record_mse[-1]))
             saver.save(sess, train_dir + '/model_%s.ckpt' % (str(i)))
             
     tf_util.dist_vis(recon, X_pc, X_meta)
-
+    data.visualize_recon_points(X_pc[0], recon[0], file_name='train_compare')
 
 train()
 
