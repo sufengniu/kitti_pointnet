@@ -1,265 +1,238 @@
-import argparse
-import math
-import h5py
+import matplotlib
+matplotlib.use('Agg')
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+
 import numpy as np
 import tensorflow as tf
-import socket
-import importlib
-import os
-import sys
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(BASE_DIR)
-sys.path.append(os.path.join(BASE_DIR, 'models'))
-sys.path.append(os.path.join(BASE_DIR, 'utils'))
-import provider
 import tf_util
+import data
+import os
+import os.path as osp
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--gpu', type=int, default=0, help='GPU to use [default: GPU 0]')
-parser.add_argument('--model', default='dgcnn', help='Model name: dgcnn')
-parser.add_argument('--log_dir', default='log', help='Log dir [default: log]')
-parser.add_argument('--num_point', type=int, default=1024, help='Point Number [256/512/1024/2048] [default: 1024]')
-parser.add_argument('--max_epoch', type=int, default=250, help='Epoch to run [default: 250]')
-parser.add_argument('--batch_size', type=int, default=32, help='Batch Size during training [default: 32]')
-parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
-parser.add_argument('--momentum', type=float, default=0.9, help='Initial learning rate [default: 0.9]')
-parser.add_argument('--optimizer', default='adam', help='adam or momentum [default: adam]')
-parser.add_argument('--decay_step', type=int, default=200000, help='Decay step for lr decay [default: 200000]')
-parser.add_argument('--decay_rate', type=float, default=0.7, help='Decay rate for lr decay [default: 0.8]')
-FLAGS = parser.parse_args()
+from external.structural_losses.tf_nndistance import nn_distance
+from external.structural_losses.tf_approxmatch import approx_match, match_cost
 
+FLAGS = tf.flags.FLAGS
 
-BATCH_SIZE = FLAGS.batch_size
-NUM_POINT = FLAGS.num_point
-MAX_EPOCH = FLAGS.max_epoch
-BASE_LEARNING_RATE = FLAGS.learning_rate
-GPU_INDEX = FLAGS.gpu
-MOMENTUM = FLAGS.momentum
-OPTIMIZER = FLAGS.optimizer
+# Optimizer parameters.
+tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
+
+# Training options.
+tf.flags.DEFINE_string("top_out_dir", "/scratch1/sniu/point_cloud/checkpoints",
+                       "Checkpointing directory.")
+tf.flags.DEFINE_string("top_in_dir", "/scratch2/sniu/point_cloud/shape_net_core_uniform_samples_2048/",
+                       "data input dir")
+tf.flags.DEFINE_string("encoder", "point",
+                       "encoder type [edge|point]")
+tf.flags.DEFINE_string("decoder", "fc",
+                       "decoder type [fc|grid]")
+tf.flags.DEFINE_string("loss", "chamfer",
+                       "loss type [chamfer|emd]")
+tf.flags.DEFINE_integer("split_mode", 0,
+                       "0: foreground, 1: background, 2: all points, 3: clustering on foreground")
+tf.flags.DEFINE_string("cluster_mode", 'kmeans',
+                       "kmeans, spectral, dirichlet")
+tf.flags.DEFINE_integer("num_points", 200,
+                       "number of points in point cloud")
+tf.flags.DEFINE_integer("batch_size", 512,
+                       "batch size")
+tf.flags.DEFINE_integer("latent_dim", 21,
+                       "latent code dimension")
+tf.flags.DEFINE_integer("top_k", 10,
+                       "number of sampling points in sampling mode")
+tf.flags.DEFINE_integer("num_epochs", 5000,
+                       "number of training epoch")
+tf.flags.DEFINE_integer("decay_step", 200000,
+                       "Decay step for lr decay [default: 200000]")
+tf.flags.DEFINE_float("learning_rate", 0.001,
+                      "learning rate")
+
+# Data setting
+batch_size = FLAGS.batch_size
+origin_num_points = 1024 if FLAGS.split_mode==3 else FLAGS.num_points
+k = FLAGS.top_k
+latent_dim = FLAGS.latent_dim
+# Tensorflow code below
+n_filters = 10
+lr = FLAGS.learning_rate # learning rate
+num_epochs = FLAGS.num_epochs
+
+DECAY_RATE = 0.8
 DECAY_STEP = FLAGS.decay_step
-DECAY_RATE = FLAGS.decay_rate
-
-MODEL = importlib.import_module(FLAGS.model) # import network module
-MODEL_FILE = os.path.join(BASE_DIR, 'models', FLAGS.model+'.py')
-LOG_DIR = FLAGS.log_dir
-if not os.path.exists(LOG_DIR): os.mkdir(LOG_DIR)
-os.system('cp %s %s' % (MODEL_FILE, LOG_DIR)) # bkp of model def
-os.system('cp train.py %s' % (LOG_DIR)) # bkp of train procedure
-LOG_FOUT = open(os.path.join(LOG_DIR, 'log_train.txt'), 'w')
-LOG_FOUT.write(str(FLAGS)+'\n')
-
-MAX_NUM_POINT = 2048
-NUM_CLASSES = 40
-
 BN_INIT_DECAY = 0.5
 BN_DECAY_DECAY_RATE = 0.5
 BN_DECAY_DECAY_STEP = float(DECAY_STEP)
 BN_DECAY_CLIP = 0.99
 
-HOSTNAME = socket.gethostname()
-
-# ModelNet40 official train/test split
-TRAIN_FILES = provider.getDataFiles( \
-    os.path.join(BASE_DIR, '../data/modelnet40_ply_hdf5_2048/train_files.txt'))
-TEST_FILES = provider.getDataFiles(\
-    os.path.join(BASE_DIR, '../data/modelnet40_ply_hdf5_2048/test_files.txt'))
-
-def log_string(out_str):
-    LOG_FOUT.write(out_str+'\n')
-    LOG_FOUT.flush()
-    print(out_str)
-
+if FLAGS.split_mode == 0:
+    train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "f_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+elif FLAGS.split_mode == 1:
+     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "b_%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+elif FLAGS.split_mode == 2:
+     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
+elif FLAGS.split_mode == 3:
+     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s_%s" % (FLAGS.cluster_mode, FLAGS.encoder, FLAGS.decoder, FLAGS.loss)))
 
 def get_learning_rate(batch):
     learning_rate = tf.train.exponential_decay(
-                        BASE_LEARNING_RATE,  # Base learning rate.
-                        batch * BATCH_SIZE,  # Current index into the dataset.
+                        FLAGS.learning_rate,  # Base learning rate.
+                        batch * batch_size,  # Current index into the dataset.
                         DECAY_STEP,          # Decay step.
                         DECAY_RATE,          # Decay rate.
                         staircase=True)
     learning_rate = tf.maximum(learning_rate, 0.00001) # CLIP THE LEARNING RATE!
-    return learning_rate        
+    return learning_rate    
 
 def get_bn_decay(batch):
     bn_momentum = tf.train.exponential_decay(
                       BN_INIT_DECAY,
-                      batch*BATCH_SIZE,
+                      batch*batch_size,
                       BN_DECAY_DECAY_STEP,
                       BN_DECAY_DECAY_RATE,
                       staircase=True)
     bn_decay = tf.minimum(BN_DECAY_CLIP, 1 - bn_momentum)
     return bn_decay
 
+
 def train():
-    with tf.Graph().as_default():
-        with tf.device('/gpu:'+str(GPU_INDEX)):
-            pointclouds_pl, labels_pl = MODEL.placeholder_inputs(BATCH_SIZE, NUM_POINT)
-            is_training_pl = tf.placeholder(tf.bool, shape=())
-            print(is_training_pl)
+    # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
+    gt = tf.placeholder(tf.float32, [None, origin_num_points, 3])
+    meta = tf.placeholder(tf.int32, [None])
+    is_training = tf.placeholder(tf.bool, shape=())
+
+    batch = tf.get_variable('batch', [],
+        initializer=tf.constant_initializer(0), trainable=False)
+    bn_decay = get_bn_decay(batch)
+
+    mask = tf.sequence_mask(meta, maxlen=origin_num_points, dtype=tf.float32)
+    mask = tf.expand_dims(mask, -1)
+
+    if FLAGS.encoder == "edge":
+        def body(net_in):
+            row_idx = tf.range(net_in[1])
+            col_idx_tmp = tf.expand_dims(tf.zeros_like(row_idx), -1)
+            col_idx = tf.concat([col_idx_tmp, col_idx_tmp+1, col_idx_tmp+2], -1)
+            img = net_in[0]
+            row_idx = tf.tile(tf.expand_dims(row_idx, -1), [1, 3])
+            idx = tf.stack([row_idx, col_idx])
+            idx = tf.transpose(idx, [1,2,0])
+            return tf.gather_nd(img, idx)
+        input_image = tf.map_fn(body, (gt, meta), tf.float32)
+
+        adj_matrix = tf_util.pairwise_distance(input_image)
+        nn_idx = tf_util.knn(adj_matrix, k=k)
+
+        # ------- encoder  -------   
+        # two-layer conv
+        edge_feature = tf_util.get_edge_feature(input_image, nn_idx=nn_idx, k=k)
+        net = tf_util.neighbor_conv(edge_feature, "encoder_1", is_training, n_filters=64, bn_decay=bn_decay)
+
+        # adj_matrix = tf_util.pairwise_distance(net)
+        # nn_idx = tf_util.knn(adj_matrix, k=k)
+        edge_feature = tf_util.get_edge_feature(net, nn_idx=nn_idx, k=k)
+        net = tf_util.neighbor_conv(edge_feature, "encoder_2", is_training, n_filters=latent_dim, bn_decay=bn_decay)
+    elif FLAGS.encoder == "point":
+        net = gt
+        net = tf_util.point_conv(net, "encoder_1", is_training, n_filters=64, bn_decay=bn_decay)
+        net = tf_util.point_conv(net, "encoder_2", is_training, n_filters=latent_dim, bn_decay=bn_decay)
+        net = net * mask
+
+    # max pool
+    code = tf.reduce_max(net, axis=-2, keepdims=False)
+    print (code)
+
+    # ------- decoder  ------- 
+    if FLAGS.decoder == "fc":
+        x_reconstr = tf_util.fully_connected_decoder(code, origin_num_points, is_training, bn_decay=bn_decay)
+    elif FLAGS.decoder == "grid":
+        code = tf.expand_dims(code, -2)
+        map_size = [20, 10]
+        global_code_tile = tf.tile(code, [1, origin_num_points, 1])
+        local_code = tf_util.fold(map_size[0], map_size[1])
+        local_code = tf.reshape(local_code, [1, origin_num_points, 2])
+        local_code_tile = tf.tile(local_code, [batch_size, 1, 1])
+        all_code = tf.concat([local_code_tile, global_code_tile], axis = -1)
+
+        net = tf_util.point_conv(all_code, "decoder_1", is_training, 100, activation_function=tf.nn.relu, bn_decay=bn_decay)
+        net = tf_util.point_conv(net, "decoder_2", is_training, 100, activation_function=tf.nn.relu, bn_decay=bn_decay)
+        net = tf_util.point_conv(net, "decoder_3", is_training, 50, activation_function = tf.nn.relu, bn_decay=bn_decay)
+        net = tf_util.point_conv(net, "decoder_4", is_training, 10, activation_function = tf.nn.relu, bn_decay=bn_decay)
+        net = tf_util.point_conv(net, "decoder_5", is_training, 3, activation_function = None, bn_decay=bn_decay)
+        net = tf.reshape(net, [-1, origin_num_points, 3])
+        net_xy = tf.nn.tanh(net[:,:,0:2])
+        net_z = tf.expand_dims(net[:,:,2], -1)
+        x_reconstr = tf.concat([net_xy, net_z], -1)
+
+    x_reconstr = x_reconstr * mask
+    #  -------  loss + optimization  ------- 
+    if FLAGS.loss == "emd":
+        match = approx_match(x_reconstr, gt)
+        reconstruction_loss = tf.reduce_mean(match_cost(x_reconstr, gt, match))
+    elif FLAGS.loss == "chamfer":
+        cost_p1_p2, _, cost_p2_p1, _ = nn_distance(x_reconstr, gt)
+        reconstruction_loss = tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
+
+    # reg_losses = self.graph.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+
+    learning_rate = get_learning_rate(batch)
+    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+    train_op = optimizer.minimize(reconstruction_loss, global_step=batch)
+    sess = tf.Session()
+    saver = tf.train.Saver()
+    sess.run(tf.global_variables_initializer())
+
+    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, split_mode=FLAGS.split_mode, cluster_mode=FLAGS.cluster_mode)
+
+    record_loss = []
+    for i in range(num_epochs):
+        record_mean, record_var, record_mse = [], [], []
+        for j in range(all_pc_data.shape[0]//batch_size):
+            X_pc, X_meta = all_pc_data[j*batch_size:(j+1)*batch_size], all_meta_data[j*batch_size:(j+1)*batch_size]
+            _, emd_loss, recon = sess.run([train_op, reconstruction_loss, x_reconstr], feed_dict={gt: X_pc, meta: X_meta, is_training: True})
+            record_loss.append(emd_loss)
+            mean, var, mse = tf_util.dist_stat(recon, X_pc, X_meta)
+            record_mean.append(mean)
+            record_var.append(var)
+            record_mse.append(mse)
+
+        data.shuffle_data(all_pc_data, all_meta_data)
+
+        if i % 10 == 0:
+            print ("iteration: {}, loss: {}".format(i, emd_loss))
+            print ("mean: %.6f, var: %.6f, mse: %.6f" % (np.array(record_mean).mean(), np.array(record_var).mean(), np.array(record_mse).mean()))
+            saver.save(sess, train_dir + '/model_%s.ckpt' % (str(i)))
             
-            # Note the global_step=batch parameter to minimize. 
-            # That tells the optimizer to helpfully increment the 'batch' parameter for you every time it trains.
-            batch = tf.Variable(0)
-            bn_decay = get_bn_decay(batch)
-            tf.summary.scalar('bn_decay', bn_decay)
+    tf_util.dist_vis(recon, X_pc, X_meta)
+    data.visualize_recon_points(X_pc[0], recon[0], file_name='train_compare_%d' % FLAGS.split_mode)
 
-            # Get model and loss 
-            pred, end_points = MODEL.get_model(pointclouds_pl, is_training_pl, bn_decay=bn_decay)
-            loss = MODEL.get_loss(pred, labels_pl, end_points)
-            tf.summary.scalar('loss', loss)
-
-            correct = tf.equal(tf.argmax(pred, 1), tf.to_int64(labels_pl))
-            accuracy = tf.reduce_sum(tf.cast(correct, tf.float32)) / float(BATCH_SIZE)
-            tf.summary.scalar('accuracy', accuracy)
-
-            # Get training operator
-            learning_rate = get_learning_rate(batch)
-            tf.summary.scalar('learning_rate', learning_rate)
-            if OPTIMIZER == 'momentum':
-                optimizer = tf.train.MomentumOptimizer(learning_rate, momentum=MOMENTUM)
-            elif OPTIMIZER == 'adam':
-                optimizer = tf.train.AdamOptimizer(learning_rate)
-            train_op = optimizer.minimize(loss, global_step=batch)
-            
-            # Add ops to save and restore all the variables.
-            saver = tf.train.Saver()
-            
-        # Create a session
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
-        config.allow_soft_placement = True
-        config.log_device_placement = False
-        sess = tf.Session(config=config)
-
-        # Add summary writers
-        #merged = tf.merge_all_summaries()
-        merged = tf.summary.merge_all()
-        train_writer = tf.summary.FileWriter(os.path.join(LOG_DIR, 'train'),
-                                  sess.graph)
-        test_writer = tf.summary.FileWriter(os.path.join(LOG_DIR, 'test'))
-
-        # Init variables
-        init = tf.global_variables_initializer()
-        # To fix the bug introduced in TF 0.12.1 as in
-        # http://stackoverflow.com/questions/41543774/invalidargumenterror-for-tensor-bool-tensorflow-0-12-1
-        #sess.run(init)
-        sess.run(init, {is_training_pl: True})
-
-        ops = {'pointclouds_pl': pointclouds_pl,
-               'labels_pl': labels_pl,
-               'is_training_pl': is_training_pl,
-               'pred': pred,
-               'loss': loss,
-               'train_op': train_op,
-               'merged': merged,
-               'step': batch}
-
-        for epoch in range(MAX_EPOCH):
-            log_string('**** EPOCH %03d ****' % (epoch))
-            sys.stdout.flush()
-             
-            train_one_epoch(sess, ops, train_writer)
-            eval_one_epoch(sess, ops, test_writer)
-            
-            # Save the variables to disk.
-            if epoch % 10 == 0:
-                save_path = saver.save(sess, os.path.join(LOG_DIR, "model.ckpt"))
-                log_string("Model saved in file: %s" % save_path)
+train()
 
 
-
-def train_one_epoch(sess, ops, train_writer):
-    """ ops: dict mapping from string to tf ops """
-    is_training = True
-    
-    # Shuffle train files
-    train_file_idxs = np.arange(0, len(TRAIN_FILES))
-    np.random.shuffle(train_file_idxs)
-    
-    for fn in range(len(TRAIN_FILES)):
-        log_string('----' + str(fn) + '-----')
-        current_data, current_label = provider.loadDataFile(TRAIN_FILES[train_file_idxs[fn]])
-        current_data = current_data[:,0:NUM_POINT,:]
-        current_data, current_label, _ = provider.shuffle_data(current_data, np.squeeze(current_label))            
-        current_label = np.squeeze(current_label)
-        
-        file_size = current_data.shape[0]
-        num_batches = file_size // BATCH_SIZE
-        
-        total_correct = 0
-        total_seen = 0
-        loss_sum = 0
-       
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * BATCH_SIZE
-            end_idx = (batch_idx+1) * BATCH_SIZE
-            
-            # Augment batched point clouds by rotation and jittering
-            rotated_data = provider.rotate_point_cloud(current_data[start_idx:end_idx, :, :])
-            jittered_data = provider.jitter_point_cloud(rotated_data)
-            jittered_data = provider.random_scale_point_cloud(jittered_data)
-            jittered_data = provider.rotate_perturbation_point_cloud(jittered_data)
-            jittered_data = provider.shift_point_cloud(jittered_data)
-
-            feed_dict = {ops['pointclouds_pl']: jittered_data,
-                         ops['labels_pl']: current_label[start_idx:end_idx],
-                         ops['is_training_pl']: is_training,}
-            summary, step, _, loss_val, pred_val = sess.run([ops['merged'], ops['step'],
-                ops['train_op'], ops['loss'], ops['pred']], feed_dict=feed_dict)
-            train_writer.add_summary(summary, step)
-            pred_val = np.argmax(pred_val, 1)
-            correct = np.sum(pred_val == current_label[start_idx:end_idx])
-            total_correct += correct
-            total_seen += BATCH_SIZE
-            loss_sum += loss_val
-        
-        log_string('mean loss: %f' % (loss_sum / float(num_batches)))
-        log_string('accuracy: %f' % (total_correct / float(total_seen)))
-
-        
-def eval_one_epoch(sess, ops, test_writer):
-    """ ops: dict mapping from string to tf ops """
-    is_training = False
-    total_correct = 0
-    total_seen = 0
-    loss_sum = 0
-    total_seen_class = [0 for _ in range(NUM_CLASSES)]
-    total_correct_class = [0 for _ in range(NUM_CLASSES)]
-    
-    for fn in range(len(TEST_FILES)):
-        log_string('----' + str(fn) + '-----')
-        current_data, current_label = provider.loadDataFile(TEST_FILES[fn])
-        current_data = current_data[:,0:NUM_POINT,:]
-        current_label = np.squeeze(current_label)
-        
-        file_size = current_data.shape[0]
-        num_batches = file_size // BATCH_SIZE
-        
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * BATCH_SIZE
-            end_idx = (batch_idx+1) * BATCH_SIZE
-
-            feed_dict = {ops['pointclouds_pl']: current_data[start_idx:end_idx, :, :],
-                         ops['labels_pl']: current_label[start_idx:end_idx],
-                         ops['is_training_pl']: is_training}
-            summary, step, loss_val, pred_val = sess.run([ops['merged'], ops['step'],
-                ops['loss'], ops['pred']], feed_dict=feed_dict)
-            pred_val = np.argmax(pred_val, 1)
-            correct = np.sum(pred_val == current_label[start_idx:end_idx])
-            total_correct += correct
-            total_seen += BATCH_SIZE
-            loss_sum += (loss_val*BATCH_SIZE)
-            for i in range(start_idx, end_idx):
-                l = current_label[i]
-                total_seen_class[l] += 1
-                total_correct_class[l] += (pred_val[i-start_idx] == l)
-            
-    log_string('eval mean loss: %f' % (loss_sum / float(total_seen)))
-    log_string('eval accuracy: %f'% (total_correct / float(total_seen)))
-    log_string('eval avg class acc: %f' % (np.mean(np.array(total_correct_class)/np.array(total_seen_class,dtype=np.float))))
-         
+# for i in range(10):
+#     pc_visual = recon
+#     fig = plt.figure()
+#     ax = Axes3D(fig)
+#     ax.scatter(pc_visual[i,:,0], pc_visual[i,:,1], pc_visual[i,:,2], 'ro')
+#     ax.scatter(X_pc[i,:,0], X_pc[i,:,1], X_pc[i,:,2], 'bo')
+#     plt.savefig('imgs/gen_%d.png' % (i), dpi=80)
 
 
-if __name__ == "__main__":
-    train()
-    LOG_FOUT.close()
+# record_loss = []
+# for i in range(num_epochs):
+#    # X = tf_util.generate_pc_data(batch_size) # load real dataset
+#    X = tf_util.generate_batch_data(batch_size, origin_num_points)
+#    _, emd_loss, recon, mu_recon = sess.run([train_op, reconstruction_loss, x_reconstr, mu_reconstr], feed_dict={gt: X, is_training: True})
+#    record_loss.append(emd_loss)
+#    if i % 10 == 0:
+#      print ("iteration: {}, loss: {}".format(i, emd_loss))
+
+# fig = plt.figure()
+# plt.plot(X[0,:,0], X[0,:,1], 'bs', mu_recon[0,:,0], mu_recon[0,:,1], 'ro')
+# plt.savefig('orig')
+# plt.close()
+
+# fig = plt.figure()
+# plt.plot(recon[0,:,0], recon[0,:,1], 'bs', mu_recon[0,:,0], mu_recon[0,:,1], 'ro')
+# plt.savefig('recon')
+# plt.close()

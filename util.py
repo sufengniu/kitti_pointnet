@@ -1,19 +1,43 @@
 import numpy as np
 import tensorflow as tf
+import sys
 import os
 import os.path as osp
 import pandas as pd
+
+from functools import partial
+from itertools import repeat
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+from multiprocessing import Pool
+import collections
+import random
+from random import shuffle, randint
+import scipy
+from scipy import ndimage
+from scipy.sparse import coo_matrix
+
 from source.utilities import print_progress
 from moviepy.editor import ImageSequenceClip
 
+from sklearn import linear_model, datasets
+from sklearn.cluster import KMeans
+from sklearn.cluster import SpectralClustering
+from sklearn import mixture
+
 from source import parseTrackletXML as xmlParser
 import pykitti
+
+from octree import octree_func
+
+PointCell = collections.namedtuple('PointCell', (
+    'data_id', 'cell_id', 'points', 'centroids', 'scale', 
+    'num_points', 'mse', 'var', 'mean'))
+
 
 colors = {
     'Car': 'b',
@@ -259,19 +283,659 @@ def draw_3d_plot(frame, dataset, tracklet_rects, tracklet_types, points=0.2):
     plt.close(f)
     return filename
 
+def sub2ind(array_shape, rows, cols):
+    ind = rows*array_shape[1] + cols
+    ind[ind < 0] = -1
+    ind[ind >= array_shape[0]*array_shape[1]] = -1
+    return ind.astype(int)
 
-# testing
-# frames = []
-# n_frames = len(list(dataset.velo))
+def ind2sub(array_shape, ind):
+    ind[ind < 0] = -1
+    ind[ind >= array_shape[0]*array_shape[1]] = -1
+    rows = np.expand_dims((ind.astype('int') / array_shape[1]), axis=-1)
+    cols = np.expand_dims(ind % array_shape[1], axis=-1)
+    coordinates = np.concatenate([rows, cols], axis =-1)
+    return coordinates
 
-# print('Preparing animation frames...')
-# for i in range(n_frames):
-#     print_progress(i, n_frames - 1)
-#     filename = draw_3d_plot(i, dataset, tracklet_rects, tracklet_types)
-#     frames += [filename]
-# print('...Animation frames ready.')
+def rough_LBS(points):
+    ransac = linear_model.RANSACRegressor()
+    ransac.fit(points[:,0:2], points[:,2])
+    inlier_mask = ransac.inlier_mask_
+    outlier_mask = np.logical_not(inlier_mask)
+    background_points = points[inlier_mask, 0:3]
+    foreground_points = points[outlier_mask, 0:3]
+    return foreground_points, background_points
 
-# clip = ImageSequenceClip(frames, fps=5)
-# % time
-# clip.write_gif('pcl_data.gif', fps=5)
+def get_cluster_cellmap_from_raw_points(raw_points, n_threads=16, cluster_mode="kmeans", seeds=[0]):
 
+    # affinity = 'rbf'
+    affinity = 'nearest_neighbors'
+    num_neighbors = 20
+    num_cluster = 64
+    # seeds = [1,22123,3010,4165,54329,62,7656,80109212] # for better generalization
+     # for better generalization
+    cluster_idx = range(num_cluster)
+    cellmap = {}
+    for s in range(len(seeds)):
+        if cluster_mode == "dirichlet":
+            spectral = mixture.BayesianGaussianMixture(n_components=num_cluster, covariance_type='full', random_state=seeds[s]).fit(raw_points)
+            cluster_idx = np.unique(spectral.predict(raw_points))
+        else:
+            if cluster_mode == 'kmeans':
+                spectral = KMeans(n_clusters=num_cluster, random_state=seeds[s], n_jobs=n_threads).fit(raw_points)
+            elif cluster_mode == "spectral":
+                spectral = SpectralClustering(num_cluster, random_state=seeds[s], affinity=affinity, n_neighbors=num_neighbors, n_jobs=n_threads).fit(raw_points)
+        for i, index in enumerate(cluster_idx):
+            if hasattr(spectral, 'labels_'):
+                idx = np.where(spectral.labels_.astype(np.int)==index)[0]
+            else:
+                idx = np.where(spectral.predict(raw_points)==index)[0]
+            cellmap[s*num_cluster+i] = raw_points[idx]
+    return cellmap
+
+def get_cellmap_from_raw_points(raw_points, is_training=False, 
+                    n_threads=16, split_mode=0, cluster_mode='kmeans', 
+                    cell_per_meter=1, cellmap_radius=30):
+    
+    if is_training == True:
+        seeds = [0,22123,3010,4165]
+    else:
+        seeds = [0]
+
+    foreground_points, background_points = rough_LBS(raw_points)
+    if split_mode == 0:
+        point = foreground_points
+    elif split_mode == 1:
+        point = background_points
+    elif split_mode == 2:
+        point = raw_points[:,:2]
+    elif split_mode == 3:
+        return get_cluster_cellmap_from_raw_points(foreground_points, n_threads, cluster_mode=cluster_mode, seeds=seeds)
+    cellmap_size = 2*cell_per_meter*cellmap_radius
+    
+    # Extract foreground points within cellmap
+    index_within_cellmap = (abs(point[:, 0]) < cellmap_radius) &  (abs(point[:, 1]) < cellmap_radius);
+    points_within_cellmap = point[index_within_cellmap, :]
+    cell_id_2d = cellmap_radius*cell_per_meter + np.floor(points_within_cellmap[:, 0:2]*cell_per_meter)
+
+    cell_id = sub2ind([cellmap_size, cellmap_size], cell_id_2d[:,0], cell_id_2d[:,1])
+    cell_id_unique = np.unique(cell_id) 
+
+    cellmap = {}
+    for i_cell in cell_id_unique:
+        cell_id_index = (cell_id == i_cell)
+        cellmap[i_cell] = points_within_cellmap[cell_id_index, :]
+
+    return cellmap
+
+def get_octree_center(raw_points, meta, octree_depth=2, num_points_lower_threshold=10, num_points_upper_threshold=200):
+    centers = []
+    for i in range(raw_points.shape[0]):
+        point = raw_points[i, range(min(meta[i], num_points_upper_threshold)), :]
+
+        world_size = max(point[:,0].max()-point[:,0].min(), point[:,1].max()-point[:,1].min(), point[:,2].max()-point[:,2].min())
+        origin = point.mean(axis=0)
+        octree_dict = {}
+        point_set = tuple(map(tuple, point))
+        octree_func(octree_dict, point_set, num_points_upper_threshold, octree_depth, world_size, origin)
+
+        octree_center = []
+        for key, value in octree_dict.items():
+            if key[0] == octree_depth-1:
+                point_subspace = point[np.asarray(value, dtype=np.int32),:]
+                octree_center.append(point_subspace.mean(axis=0))
+        octree_center = np.array(octree_center)
+        centers.append(octree_center)
+    return centers
+
+
+def get_points_from_cellmap(cellmap, cell_per_meter=1, cellmap_radius=30, num_points_lower_threshold = 50):
+
+    points = None
+    for i_cell in cellmap.keys():
+        if points == None:
+            points = cellmap[i_cell]
+        else:
+            points = np.concatenate([points, cellmap[i_cell]], axis=0)
+    return points
+
+
+def get_batch_data_from_cellmap(cellmap, num_points_lower_threshold=50, num_points_upper_threshold=200):
+
+    batch_data = []
+    number_points = []
+    centroids = []
+    cell_id = []
+
+    for i_cell in cellmap.keys():
+
+        points = cellmap[i_cell]
+        num_points = points.shape[0]
+        dim = points.shape[-1]
+        if num_points < num_points_lower_threshold:
+            # no AE compression
+            continue
+
+        number_points.append(num_points)
+
+        # sampling if too many points
+        if num_points > num_points_upper_threshold:
+            sample_index = np.random.choice(num_points, num_points_upper_threshold, replace=False)
+            points = points[sample_index, :]
+
+        # centralize data
+        centroid = points.mean(axis=0)
+        centroids.append(centroid)
+        points = points - centroid
+
+        cell_id.append(i_cell)
+
+        # data same shape
+        if num_points < num_points_upper_threshold:
+            cellpoints = np.concatenate([points, np.zeros((num_points_upper_threshold-num_points, dim))],axis=0)
+        else:
+            cellpoints = points
+
+        batch_data.append(cellpoints)
+
+    # batch * num_points_upper_threshold * 4
+    batch_data = np.stack(batch_data)
+
+    meta_data = {}
+    meta_data['number_points'] = np.stack(number_points) # batch
+    meta_data['centroids'] = np.stack(centroids) # batch
+    meta_data['cell_id'] = np.stack(cell_id) # batch
+    return batch_data, meta_data
+
+def shuffle_data(cell_id, point_clouds, meta, scale, centroids, seed=12345):
+    num_examples = point_clouds.shape[0]
+    if seed is not None:
+        np.random.seed(seed)
+    perm = np.arange(num_examples)
+    np.random.shuffle(perm)
+    return cell_id[perm], point_clouds[perm], meta[perm], scale[perm], centroids[perm]
+
+def rescale(point_cloud, num_points):
+    p_scaled = point_cloud[:num_points, :]
+    new_point = np.zeros_like(point_cloud)
+    center = np.mean(p_scaled, 0)
+    p_scaled -= center
+    x_max, y_max, z_max = np.max(p_scaled, 0)
+    x_min, y_min, z_min = np.min(p_scaled, 0)
+    x_var, y_var, z_var = max(x_max,abs(x_min)), max(y_max,abs(y_min)), max(z_max,abs(z_min))
+    ratio = 1. / max(x_var, y_var, z_var)
+    new_point[:num_points] = p_scaled * ratio
+    return new_point, ratio, center
+
+class LoadData():
+    def __init__(self, args, drives):
+        
+        self.batch_size = args.batch_size
+        self.batch_idx = 0
+        self.basedir = args.data_in_dir
+        self.L = args.PL
+        self.W = args.PW
+        self.fb_split = args.fb_split
+        self.cell_max_points = args.cell_max_points
+        self.cell_min_points = args.cell_min_points
+        self.max_x_dist = 16.0
+        self.max_y_dist = 16.0
+        self.max_z_dist = 3.0
+
+        self.data_id = []
+        self.dataset_gray, self.dataset_rgb, self.dataset_velo = [], [], []
+        for drive in drives:
+            dataset = load_dataset(args.date, drive, self.basedir)
+            self.data_id += [args.date + '_' + drive]
+            # for visualization
+            # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
+            # frame = 10 # for visualization
+            # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
+            self.dataset_gray += list(dataset.gray)
+            self.dataset_rgb += list(dataset.rgb)
+            self.dataset_velo += list(dataset.velo)
+        self.cleaned_velo = []
+        for points in self.dataset_velo:
+            idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
+            idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
+            idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
+            idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
+            filter_data = np.delete(points, idx, axis=0)[:,:3]
+            # testing
+            # index = random.sample(range(0, len(filter_data)-1), 20000)
+            # self.cleaned_velo.append(filter_data[index])
+            self.cleaned_velo.append(filter_data) # ignore the 4th dimension
+
+        test_sweep_split = int(0.95*len(self.cleaned_velo))
+        self.test_sweep = self.cleaned_velo[test_sweep_split:]
+
+        if self.fb_split == True:
+            self.train_cell_f, self.train_cell_info_f, \
+            self.valid_cell_f, self.valid_cell_info_f, \
+            self.train_cell_b, self.train_cell_info_b, \
+            self.valid_cell_b, self.valid_cell_info_b = self.fb_partition_batch(self.cleaned_velo[:test_sweep_split],
+                                                                                train_valid_split=True)
+            self.test_cell_f, self.test_cell_info_f, _, _, \
+            self.test_cell_b, self.test_cell_info_b, _, _, = self.fb_partition_batch(self.test_sweep,
+                                                                                     train_valid_split=False)
+            self.train_cell_f, self.train_cell_info_f = self.shuffle(self.train_cell_f, self.train_cell_info_f)
+            self.train_cell_b, self.train_cell_info_b = self.shuffle(self.train_cell_b, self.train_cell_info_b)
+
+            print ("total foreground training set: {}, validation set: {}, testing set: {}".format(len(self.train_cell_f), 
+                                                                                                   len(self.valid_cell_f),
+                                                                                                   len(self.test_cell_f)))  
+            print ("total background training set: {}, validation set: {}, testing set: {}".format(len(self.train_cell_b), 
+                                                                                                   len(self.valid_cell_b),
+                                                                                                   len(self.test_cell_b)))  
+
+        else:
+            self.train_cell, self.train_cell_info, \
+            self.valid_cell, self.valid_cell_info = self.partition_batch(self.cleaned_velo[:test_sweep_split], 
+                                                                         train_valid_split=True)
+            self.test_cell, self.test_cell_info, _, _ = self.partition_batch(self.test_sweep, train_valid_split=False)
+            self.train_cell, self.train_cell_info = self.shuffle(self.train_cell, self.train_cell_info)
+
+            print ("total training set: {}, validation set: {}, testing set: {}".format(len(self.train_cell), 
+                                                                                        len(self.valid_cell),
+                                                                                        len(self.test_cell)))
+        print ("batch size: {}".format(self.batch_size))
+
+        # sample
+        self.sample_idx = randint(0, len(self.test_sweep)-1)
+        self.sample_idx_train = randint(0, len(self.cleaned_velo[:test_sweep_split])-1)
+
+        if self.fb_split == True:
+            f_points, b_points = rough_LBS(self.test_sweep[self.sample_idx])
+            self.test_f_sweep, self.test_b_sweep = f_points, b_points
+            self.sample_points_f, self.sample_info_f = self.partition_single(f_points, self.sample_idx)
+            self.sample_points_b, self.sample_info_b = self.partition_single(b_points, self.sample_idx)
+            # training set, see if overfitting
+            f_points_t, b_points_t = rough_LBS(self.cleaned_velo[self.sample_idx_train])
+            self.train_f_sweep, self.train_b_sweep = f_points_t, b_points_t
+            self.train_points_f, self.train_info_f = self.partition_single(f_points_t, self.sample_idx_train)
+            self.train_points_b, self.train_info_b = self.partition_single(b_points_t, self.sample_idx_train)
+            
+        else:
+            self.sample_points, self.sample_info = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)
+            # training set, see if overfitting
+            self.train_points, self.train_info = self.partition_single(self.cleaned_velo[self.sample_idx_train], self.sample_idx_train)
+
+    def fb_partition_batch(self, cleaned_velo, train_valid_split=True):
+
+        foreground, background = [], []
+        for points in cleaned_velo:
+            f_points, b_points = rough_LBS(points)
+            foreground.append(f_points)
+            background.append(b_points)
+
+        train_cell_f, train_cell_info_f, \
+        valid_cell_f, valid_cell_info_f = self.partition_batch(foreground, train_valid_split)
+
+        train_cell_b, train_cell_info_b, \
+        valid_cell_b, valid_cell_info_b = self.partition_batch(background, train_valid_split)
+
+        return_list = [train_cell_f, train_cell_info_f, valid_cell_f, valid_cell_info_f]
+        return_list += [train_cell_b, train_cell_info_b, valid_cell_b, valid_cell_info_b]
+
+        return return_list
+
+    def partition_batch(self, cleaned_velo, train_valid_split=True):
+        cell_points = []
+        cell_info = []
+
+        for idx, points in enumerate(cleaned_velo):
+            xyz_max = np.max(points, 0)
+            xyz_min = np.min(points, 0)
+            cell_width, cell_length = (xyz_max[0]-xyz_min[0])/self.W, (xyz_max[1]-xyz_min[1])/self.L
+
+            # partition into a LxW grid
+            for i in range(self.L):
+                for j in range(self.W):
+                    left, right = xyz_min[0]+i*cell_width, xyz_min[0]+(i+1)*cell_width 
+                    up, down = xyz_min[1]+j*cell_length, xyz_min[1]+(j+1)*cell_length
+                    cell_idx = np.where(np.logical_and(np.logical_and(points[:,0]>=left, points[:,0]<right), np.logical_and(points[:,1]>=up, points[:,1]<down)))[0]
+                    num_points = len(cell_idx)
+                    if num_points < self.cell_min_points:
+                        continue
+
+                    if num_points > self.cell_max_points: # if greater than max points, random sample
+                        sample_index = np.random.choice(num_points, self.cell_max_points, replace=False)
+                        cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points)
+                    elif num_points < self.cell_max_points:
+                        new_point = np.zeros([self.cell_max_points, 3])
+                        new_point[:num_points] = points[cell_idx]
+                        cell, ratio, center = rescale(new_point, num_points)
+
+                    cell_points.append(cell)
+                    single_cell_info = {'index': idx,
+                                        'ratio': ratio,
+                                        'center': center,
+                                        'num_points': num_points}
+                    cell_info.append(single_cell_info)
+
+        if train_valid_split == True:
+            train_split = int(0.95*len(cell_points))
+            train_cell, train_cell_info = cell_points[:train_split], cell_info[:train_split]
+            valid_cell, valid_cell_info = cell_points[train_split:], cell_info[train_split:]
+            return_list = [train_cell, train_cell_info, valid_cell, valid_cell_info]
+        else:
+            return_list = [cell_points, cell_info, None, None]
+
+        return return_list
+        
+    def shuffle(self, train_cell, train_cell_info, seed=None):
+        num_examples = len(train_cell)
+        if seed is not None:
+            np.random.seed(seed)
+        perm = np.arange(num_examples)
+        np.random.shuffle(perm)
+        train_cell = [train_cell[index] for index in perm]
+        train_cell_info = [train_cell_info[index] for index in perm]
+        return train_cell, train_cell_info
+
+    def partition_single(self, points, idx):
+        xyz_max = np.max(points, 0)
+        xyz_min = np.min(points, 0)
+        cell_width, cell_length = (xyz_max[0]-xyz_min[0])/self.W, (xyz_max[1]-xyz_min[1])/self.L
+
+        # partition into a LxW grid
+        cell_points, cell_info = [], []
+        for i in range(self.L):
+            for j in range(self.W):
+                left, right = xyz_min[0]+i*cell_width, xyz_min[0]+(i+1)*cell_width 
+                up, down = xyz_min[1]+j*cell_length, xyz_min[1]+(j+1)*cell_length
+                cell_idx = np.where(np.logical_and(np.logical_and(points[:,0]>=left, points[:,0]<right), np.logical_and(points[:,1]>=up, points[:,1]<down)))[0]
+                num_points = len(cell_idx)
+                if num_points < self.cell_min_points:
+                    continue
+
+                if num_points > self.cell_max_points: # if greater than max points, random sample
+                    sample_index = np.random.choice(num_points, self.cell_max_points, replace=False)
+                    cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points)
+                elif num_points < self.cell_max_points:
+                    new_point = np.zeros([self.cell_max_points, 3])
+                    new_point[:num_points] = points[cell_idx]
+                    cell, ratio, center = rescale(new_point, num_points)
+
+                cell_points.append(cell)
+                single_cell_info = {'index': idx,
+                                    'ratio': ratio,
+                                    'center': center,
+                                    'num_points': num_points}
+                cell_info.append(single_cell_info)
+        return cell_points, cell_info
+
+    def reconstruct_scene(self, cell_points, cell_info):
+        scene = []
+        for cell, single_cell_info in zip(cell_points, cell_info):
+            num_points = single_cell_info['num_points']
+            scaled_cell = cell[:num_points] / single_cell_info['ratio']
+            scaled_cell += single_cell_info['center']
+            scene.append(scaled_cell)
+        return np.concatenate(scene, axis=0)
+
+    def all_data(self):
+        return self.cell_points
+
+    
+def load_pc_octree_data(batch_size, data_in_dir, date, drive, num_points_upper_threshold,
+                        split_mode=0, n_threads=16, octree_depth=3, shuffle=True):
+    basedir = data_in_dir
+    dataset = load_dataset(date, drive, basedir)
+
+    dataset_velo = list(dataset.velo)
+    all_points = np.empty([0, num_points_upper_threshold, dataset_velo[0].shape[1]-1], dtype=np.float32)
+    all_centroids = np.empty([0, dataset_velo[0].shape[1]-1], dtype=np.float32)
+    all_meta = np.empty([0], dtype=np.int32)
+
+    for i in range(len(dataset_velo)):
+        cellmap = get_cellmap_from_raw_points(dataset_velo[i], n_threads=n_threads, split_mode=0)
+        batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
+
+        all_points = np.concatenate([all_points, batch_points], axis=0)
+        all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
+        all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
+
+    return all_points, all_meta, all_centroids
+
+def reconstruct_points_from_batch_data(batch_data, meta_data):
+    all_points = None
+    batch_size = batch_data.shape[0]
+    for i_batch in range(batch_size):
+
+        real_number_points = meta_data['number_points'][i_batch]
+        batch_points = batch_data[i_batch, :real_number_points, :]
+
+        points = batch_points + meta_data['centroids'][i_batch]
+        if all_points is None:
+            all_points = points
+        else:
+            all_points = np.concatenate([all_points, points])
+        
+    return all_points
+
+def plot_3d_points(points, num=1000000, file_name='sample'):
+    fig = plt.figure()
+    num = min(points.shape[0], num)
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(points[:num, 0], points[:num, 1], points[:num, 2], c='b', marker='.')
+    plt.axis('equal')
+    plt.savefig(file_name)
+
+def visualize_recon_points(points, recon, num=1000000, file_name='sample'):
+    fig = plt.figure()
+    num = min(points.shape[0], num)
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(points[:num, 0], points[:num, 1], points[:num, 2], c='r', marker='.')
+    ax.scatter(recon[:num, 0], recon[:num, 1], recon[:num, 2], c='b', marker='.')
+    plt.axis('equal')
+    plt.savefig(file_name)
+
+def visualize_3d_points(dataset, points=1.0, dir='.', filename='sample'):
+    """
+    Displays statistics for a single frame. 3D plot of the lidar point cloud data and point cloud
+    projections to various planes.
+    
+    Parameters
+    ----------
+    dataset         : `raw` dataset.
+    points          : Fraction of lidar points to use. Defaults to `0.2`, e.g. 20%.
+    """
+
+    dataset_velo = dataset
+    
+    points_step = int(1. / points)
+    point_size = 0.05 * (1. / points)
+    velo_range = range(0, dataset_velo.shape[0], points_step)
+    velo_frame = dataset_velo[velo_range, :]      
+    def draw_point_cloud(ax, title, axes=[0, 1, 2], xlim3d=None, ylim3d=None, zlim3d=None):
+        """
+        Convenient method for drawing various point cloud projections as a part of frame statistics.
+        """
+        ax.scatter(*np.transpose(velo_frame[:, axes]), s=point_size, cmap='gray')
+        ax.set_title(title)
+        ax.set_xlabel('{} axis'.format(axes_str[axes[0]]))
+        ax.set_ylabel('{} axis'.format(axes_str[axes[1]]))
+        if len(axes) > 2:
+            ax.set_xlim3d(*axes_limits[axes[0]])
+            ax.set_ylim3d(*axes_limits[axes[1]])
+            ax.set_zlim3d(*axes_limits[axes[2]])
+            ax.set_zlabel('{} axis'.format(axes_str[axes[2]]))
+        else:
+            # ax.set_xlim(-30, 30)
+            # ax.set_ylim(-30, 30)
+            ax.set_xlim(*axes_limits[axes[0]])
+            ax.set_ylim(*axes_limits[axes[1]])
+        # User specified limits
+        if xlim3d!=None:
+            ax.set_xlim3d(xlim3d)
+        if ylim3d!=None:
+            ax.set_ylim3d(ylim3d)
+        if zlim3d!=None:
+            ax.set_zlim3d(zlim3d)
+                        
+    # Draw point cloud data as 3D plot
+    f2 = plt.figure(figsize=(15, 8))
+    ax2 = f2.add_subplot(111, projection='3d')                    
+    draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-10,30))
+    plt.savefig(dir+'/3d_point_cloud_'+filename)
+    
+    # Draw point cloud data as plane projections
+    f, ax3 = plt.subplots(3, 1, figsize=(15, 25))
+    draw_point_cloud(
+        ax3[0], 
+        'Velodyne scan, XZ projection (Y = 0), the car is moving in direction left to right', 
+        axes=[0, 2] # X and Z axes
+    )
+    draw_point_cloud(
+        ax3[1], 
+        'Velodyne scan, XY projection (Z = 0), the car is moving in direction left to right', 
+        axes=[0, 1] # X and Y axes
+    )
+    draw_point_cloud(
+        ax3[2], 
+        'Velodyne scan, YZ projection (X = 0), the car is moving towards the graph plane', 
+        axes=[1, 2] # Y and Z axes
+    )
+    plt.savefig(dir+'/2d_point_cloud_'+filename)
+
+
+
+# def get_cellmap_from_raw_points(raw_points, cell_per_meter=1, cellmap_radius=30):
+
+#     cellmap_size = 2*cell_per_meter*cellmap_radius
+
+#     # Extract foreground points within cellmap
+#     index_within_cellmap = (abs(raw_points[:, 0]) < cellmap_radius) &  (abs(raw_points[:, 1]) < cellmap_radius);
+#     points_within_cellmap = raw_points[index_within_cellmap, :]
+#     cell_id_2d = cellmap_radius*cell_per_meter + np.floor(points_within_cellmap[:, 0:2]*cell_per_meter)
+
+#     row = cell_id_2d[:,0]
+#     column = cell_id_2d[:,1]
+#     cellmap_matrix = coo_matrix((np.ones_like(row), (row, column)), shape=(cellmap_size, cellmap_size)).toarray()
+
+#     cell_id = sub2ind([cellmap_size, cellmap_size], cell_id_2d[:,0], cell_id_2d[:,1])
+#     cell_id_unique = np.unique(cell_id) 
+
+#     cellmap = {}
+#     for i_cell in cell_id_unique:
+#         cell_id_index = (cell_id == i_cell)
+#         cellmap[i_cell] = points_within_cellmap[cell_id_index, :]
+
+#     return cellmap, cell_id_2d, cell_id, points_within_cellmap, cellmap_matrix
+
+def find_connected_components(cellmap_matrix, blur_radius = 0.5, threshold = 0.1):
+    img = (cellmap_matrix!=0).astype(float) 
+    imgf = ndimage.gaussian_filter(img, blur_radius)
+    labeled, nr_objects = ndimage.label(imgf > threshold) 
+    components = labeled * (cellmap_matrix!=0)
+    return components, nr_objects
+
+def find_component_points(components, nr_objects):
+
+    component_points = []
+    for i_object in range(1,nr_objects+1):
+        cell_ids = np.where(components == i_object)
+        cell_nums = cell_ids[0].shape[0]
+        rows = []
+        columns = []
+        for i_cell in range(cell_nums):
+            rows.append(cell_ids[0][i_cell])
+            columns.append(cell_ids[1][i_cell])
+
+        rows = np.stack(rows)
+        columns = np.stack(columns)
+        cell_ids_1D = sub2ind([cellmap_size, cellmap_size], rows, columns)
+
+        points = None
+        for cell_id_1D in cell_ids_1D:
+            if points is None:
+                points = cellmap[cell_id_1D]
+            else:
+                points = np.concatenate((points, cellmap[cell_id_1D]), axis=0)
+
+        component_points.append(points)
+
+    return component_points
+
+
+
+
+
+
+
+        # all_points = np.empty([0, num_points_upper_threshold, self.dataset_velo[0].shape[1]-1], dtype=np.float32)
+        # all_centroids = np.empty([0, self.dataset_velo[0].shape[1]-1], dtype=np.float32)
+        # all_meta = np.empty([0], dtype=np.int32)
+        # all_cell_id = np.empty([0, 2], dtype=np.int32)
+        # all_scale = np.empty([0], dtype=np.float32)
+
+        # print ('------ loading pointnet data ------')
+        # if partition_mode == 4: # very large memory consumption when use multi-process
+        #     for i in range(len(self.dataset_velo)):
+        #         print ("=> start clustering on batch %d" % i)
+        #         cellmap = get_cellmap_from_raw_points(self.dataset_velo[i], n_threads=n_threads, 
+        #                                 split_mode=partition_mode, cluster_mode=cluster_mode, is_training=is_training)
+        #         batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
+        #         batch_points = rescale(batch_points, batch_meta['number_points'], num_points_upper_threshold)
+
+        #         all_cell_id = np.concatenate([all_cell_id, np.stack([i*np.ones_like(batch_meta['cell_id']),
+        #                                       batch_meta['cell_id']]).transpose()], axis=0)
+        #         all_points = np.concatenate([all_points, batch_points], axis=0)
+        #         all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
+        #         all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
+
+        # else:
+        #     pool = Pool(n_threads)
+        #     for i, cellmap in enumerate(pool.imap(partial(get_cellmap_from_raw_points, split_mode=partition_mode), self.dataset_velo)):
+        #         batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
+
+        #         all_cell_id = np.concatenate([all_cell_id, np.stack([i*np.ones_like(batch_meta['cell_id']), 
+        #                                       batch_meta['cell_id']]).transpose()], axis=0)
+        #         all_points = np.concatenate([all_points, batch_points], axis=0)
+        #         all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
+        #         all_scale = np.concatenate([all_meta, np.ones_like(batch_meta['number_points']).astype(np.float32)], axis=0)
+        #         all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
+
+        #     pool.close()
+        #     pool.join()
+
+        # self.all_cell_id = all_cell_id
+        # self.all_points = all_points
+        # self.all_meta = all_meta
+        # self.all_scale = all_scale
+        # self.all_centroids = all_centroids
+
+        # self.point_cell = []
+        # for i in range(all_points.shape[0]):
+        #     self.point_cell.append(PointCell(
+        #                 data_id=self.data_id,
+        #                 cell_id=all_cell_id[i],
+        #                 points=all_points[i],
+        #                 num_points=all_meta[i],
+        #                 scale=all_scale[i],
+        #                 centroids=all_centroids[i],
+        #                 mse=-1.0,
+        #                 var=-1.0,
+        #                 mean=-1.0))
+
+        # self.reset()
+
+    # def next_batch(self):
+    #     start_idx = self.batch_idx * self.batch_size
+    #     end_idx = min((self.batch_idx+1) * self.batch_size, len(self.point_cell))
+    #     batch_data = PointCell(
+    #                 data_id=self.data_id,
+    #                 cell_id=self.all_cell_id[start_idx:end_idx],
+    #                 points=self.all_points[start_idx:end_idx],
+    #                 num_points=self.all_meta[start_idx:end_idx],
+    #                 scale=self.all_scale[start_idx:end_idx],
+    #                 centroids=self.all_centroids[start_idx:end_idx],
+    #                 mse=-1.0,
+    #                 var=-1.0,
+    #                 mean=-1.0)
+    #     if end_idx == len(self.point_cell):
+    #         self.reset()
+    #     else:
+    #         self.batch_idx += 1
+    #     return batch_data

@@ -143,7 +143,11 @@ def eval():
         net = tf_util.point_conv(net, "decoder_2", is_training, 100, activation_function=tf.nn.relu, bn_decay=bn_decay)
         net = tf_util.point_conv(net, "decoder_3", is_training, 50, activation_function = tf.nn.relu, bn_decay=bn_decay)
         net = tf_util.point_conv(net, "decoder_4", is_training, 10, activation_function = tf.nn.relu, bn_decay=bn_decay)
-        x_reconstr = tf_util.point_conv(net, "decoder_5", is_training, 3, activation_function = tf.nn.tanh, bn_decay=bn_decay)
+        net = tf_util.point_conv(net, "decoder_5", is_training, 3, activation_function = None, bn_decay=bn_decay)
+        net = tf.reshape(net, [-1, origin_num_points, 3])
+        net_xy = tf.nn.tanh(net[:,:,0:2])
+        net_z = tf.expand_dims(net[:,:,2], -1)
+        x_reconstr = tf.concat([net_xy, net_z], -1)
 
     x_reconstr = x_reconstr * mask
     #  -------  loss + optimization  ------- 
@@ -161,7 +165,7 @@ def eval():
     tf.global_variables_initializer().run()
     saver.restore(sess, train_dir + '/model_%s.ckpt' % (str(4990)))
 
-    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, train=True, split_mode=FLAGS.split_mode, cluster_mode=FLAGS.cluster_mode)
+    all_pc_data, all_meta_data, _ = data.load_pc_data(batch_size, train=False, split_mode=FLAGS.split_mode, cluster_mode=FLAGS.cluster_mode)
 
     record_loss = []
     record_mean, record_var, record_mse = [], [], []
@@ -259,7 +263,7 @@ def eval_octree():
     # for j in range(100):
         print ('-------process epoch %d-----------' % j)
         X_pc, X_meta = all_pc_data[j*batch_size:(j+1)*batch_size], all_meta_data[j*batch_size:(j+1)*batch_size]
-        centers = np.array(data.get_octree_center(X_pc, X_meta, octree_depth=3))
+        centers = np.array(data.get_octree_center(X_pc, X_meta, octree_depth=2))
         valid_idx = []
         for i_batch in range(len(centers)):
             if centers[i_batch].shape[0] != 0:
@@ -290,6 +294,6 @@ def eval_octree():
 
 
 
-# eval()
-eval_baseline()
+eval()
+# eval_baseline()
 # eval_octree()
