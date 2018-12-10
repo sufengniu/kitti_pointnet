@@ -610,7 +610,7 @@ class LoadData():
                     single_cell_info = {'index': idx,
                                         'ratio': ratio,
                                         'center': center,
-                                        'num_points': num_points}
+                                        'num_points': min(num_points, self.cell_max_points)}
                     cell_info.append(single_cell_info)
 
         if train_valid_split == True:

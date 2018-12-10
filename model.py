@@ -15,7 +15,7 @@ from external.structural_losses.tf_approxmatch import approx_match, match_cost
 
 
 class AutoEncoder():
-    def __init__(self, FLAGS):
+    def __init__(self, FLAGS, scope='LAE'):
         self.batch_size = FLAGS.batch_size        
         self.latent_dim = FLAGS.latent_dim
         self.num_epochs = FLAGS.num_epochs
@@ -34,7 +34,7 @@ class AutoEncoder():
         self.BN_DECAY_CLIP = 0.99
         self.encoder_mode = FLAGS.encoder
         self.decoder_mode = FLAGS.decoder
-
+        self.scope = scope
 
         self._build_model()
 
@@ -85,7 +85,7 @@ class AutoEncoder():
     def _ae(self, pc, name_scope):
 
         with tf.variable_scope(name_scope, reuse=tf.AUTO_REUSE):
-
+            
             # ------- encoder -------
             net = self._encoder(pc, name_scope='encoder')
             
@@ -99,146 +99,152 @@ class AutoEncoder():
         return x_reconstr
 
     def _build_model(self):
-        # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
-        self.pc = tf.placeholder(tf.float32, [None, self.origin_num_points, 3])
+        with tf.Graph().as_default():
+            # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
+            self.pc = tf.placeholder(tf.float32, [None, self.origin_num_points, 3])
 
-        self.meta = tf.placeholder(tf.int32, [None])
-        mask = tf.sequence_mask(self.meta, maxlen=self.origin_num_points, dtype=tf.float32)
-        self.mask = tf.expand_dims(mask, -1)
-        
-        self.is_training = tf.placeholder(tf.bool, shape=())
+            self.meta = tf.placeholder(tf.int32, [None])
+            mask = tf.sequence_mask(self.meta, maxlen=self.origin_num_points, dtype=tf.float32)
+            self.mask = tf.expand_dims(mask, -1)
+            
+            self.is_training = tf.placeholder(tf.bool, shape=())
 
-        batch = tf.get_variable('batch', [],
-            initializer=tf.constant_initializer(0), trainable=False)
-        
-        self.x_reconstr = self._ae(self.pc, 'ae')
+            batch = tf.get_variable('batch', [],
+                initializer=tf.constant_initializer(0), trainable=False)
 
-        match = approx_match(self.x_reconstr, self.pc)
-        self.emd_loss = tf.reduce_mean(match_cost(self.x_reconstr, self.pc, match))
+            self.x_reconstr = self._ae(self.pc, 'ae')
 
-        cost_p1_p2, _, cost_p2_p1, _ = nn_distance(self.x_reconstr, self.pc)
-        self.chamfer_loss = tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
+            match = approx_match(self.x_reconstr, self.pc)
+            self.emd_loss = tf.reduce_mean(match_cost(self.x_reconstr, self.pc, match))
 
-        #  -------  loss + optimization  ------- 
-        if self.loss_type == "emd":
-            self.reconstruction_loss = self.emd_loss
-        elif self.loss_type == "chamfer":
-            self.reconstruction_loss = self.chamfer_loss
+            cost_p1_p2, _, cost_p2_p1, _ = nn_distance(self.x_reconstr, self.pc)
+            self.chamfer_loss = tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
 
-        # reg_losses = self.graph.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+            #  -------  loss + optimization  ------- 
+            if self.loss_type == "emd":
+                self.reconstruction_loss = self.emd_loss
+            elif self.loss_type == "chamfer":
+                self.reconstruction_loss = self.chamfer_loss
 
-        learning_rate = self.get_learning_rate(batch)
-        optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
+            # reg_losses = self.graph.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
 
-        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        with tf.control_dependencies(update_ops):
-            self.train_op = optimizer.minimize(self.reconstruction_loss, global_step=batch)
+            learning_rate = self.get_learning_rate(batch)
+            optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
+
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            with tf.control_dependencies(update_ops):
+                self.train_op = optimizer.minimize(self.reconstruction_loss, global_step=batch)
+            
+            config = tf.ConfigProto()
+            config.gpu_options.allow_growth = True
+            config.allow_soft_placement = True
+            config.log_device_placement = False
+            self.sess = tf.Session(config=config)
+            self.sess.run(tf.global_variables_initializer())
+            self.saver = tf.train.Saver()
 
     def train(self, point_cell, mode='foreground'):
         
         record_loss = []
         train_point, valid_point, test_point, \
         train_meta, valid_meta, test_meta = self.preprocess(point_cell, mode)
-        with tf.Session() as sess:
-            saver = tf.train.Saver()
-            sess.run(tf.global_variables_initializer())
 
-            num_batches = train_point.shape[0] // self.batch_size
-            for epoch in range(self.num_epochs):
+        num_batches = train_point.shape[0] // self.batch_size
+        for epoch in range(self.num_epochs):
 
-                train_idx = np.arange(0, len(train_point))
-                np.random.shuffle(train_idx)
-                current_point = train_point[train_idx]
-                current_meta = train_meta[train_idx]
+            train_idx = np.arange(0, len(train_point))
+            np.random.shuffle(train_idx)
+            current_point = train_point[train_idx]
+            current_meta = train_meta[train_idx]
 
-                record_mean, record_var, record_mse = [], [], []
-                for batch_idx in range(num_batches):
-                    start_idx = batch_idx * self.batch_size
-                    end_idx = (batch_idx+1) * self.batch_size
+            record_mean, record_var, record_mse = [], [], []
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * self.batch_size
+                end_idx = (batch_idx+1) * self.batch_size
 
-                    X = current_point[start_idx:end_idx]
-                    meta = current_meta[start_idx:end_idx]
-                    feed_dict={self.pc: X, self.meta: meta, self.is_training: True}
-                    op = [self.train_op, 
-                          self.emd_loss,
-                          self.chamfer_loss,
-                          self.x_reconstr,]
-                    _, emd_loss, chamfer_loss, recon = sess.run(op, feed_dict)
-                    if self.loss_type == 'emd':
-                        record_loss.append(emd_loss)
-                    elif self.loss_type == 'chamfer':
-                        record_loss.append(chamfer_loss)
-                    mean, var, mse = tf_util.dist_stat(recon, X, meta, self.origin_num_points)
-                    record_mean.append(mean)
-                    record_var.append(var)
-                    record_mse.append(mse)
+                X = current_point[start_idx:end_idx]
+                meta = current_meta[start_idx:end_idx]
+                feed_dict={self.pc: X, self.meta: meta, self.is_training: True}
+                op = [self.train_op, 
+                      self.emd_loss,
+                      self.chamfer_loss,
+                      self.x_reconstr,]
+                _, emd_loss, chamfer_loss, recon = self.sess.run(op, feed_dict)
+                if self.loss_type == 'emd':
+                    record_loss.append(emd_loss)
+                elif self.loss_type == 'chamfer':
+                    record_loss.append(chamfer_loss)
+                mean, var, mse = tf_util.dist_stat(recon, X, meta, self.origin_num_points)
+                record_mean.append(mean)
+                record_var.append(var)
+                record_mse.append(mse)
 
-                    if batch_idx % 100 == 0:
-                        print ("iteration/epoch: {}/{}, optimizing {} loss, emd loss: {}, chamfer loss: {}".format(
-                            batch_idx, epoch, self.loss_type, emd_loss, chamfer_loss))
-                        print ("mean: %.6f, var: %.6f, mse: %.6f\n" % (np.array(record_mean).mean(), 
-                                                                       np.array(record_var).mean(), 
-                                                                       np.array(record_mse).mean()))
-                if epoch % self.save_freq == 0:
-                    if self.fb_split == True:
-                        saver.save(sess, self.save_path + '/model_%s_%s.ckpt' % (mode, str(epoch)))
-                    else:
-                        saver.save(sess, self.save_path + '/model_%s.ckpt' % (str(epoch)))
+                if batch_idx % 100 == 0:
+                    print ("iteration/epoch: {}/{}, optimizing {} loss, emd loss: {}, chamfer loss: {}".format(
+                        batch_idx, epoch, self.loss_type, emd_loss, chamfer_loss))
+                    print ("mean: %.6f, var: %.6f, mse: %.6f\n" % (np.array(record_mean).mean(), 
+                                                                   np.array(record_var).mean(), 
+                                                                   np.array(record_mse).mean()))
+            if epoch % self.save_freq == 0:
+                if self.fb_split == True:
+                    self.saver.save(self.sess, self.save_path + '/model_%s_%s.ckpt' % (mode, str(epoch)))
+                else:
+                    self.saver.save(self.sess, self.save_path + '/model_%s.ckpt' % (str(epoch)))
 
-                    # evaluation
-                    valid_emd_loss, valid_chamfer_loss = [], []
-                    i = 0
-                    for i in range(len(valid_point)):
-                        valid_s, valid_e = i*self.batch_size, (i+1)*self.batch_size
-                        feed_dict = {self.pc: valid_point[valid_s:valid_e],
-                                     self.meta: valid_meta[valid_s:valid_e], 
-                                     self.is_training: False}
-                        vel, vcl = sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
-                        valid_emd_loss.append(vel)
-                        valid_chamfer_loss.append(vcl)
-
-                    feed_dict = {self.pc: valid_point[i*self.batch_size:],
-                                 self.meta: valid_meta[i*self.batch_size:], 
+                # evaluation
+                valid_emd_loss, valid_chamfer_loss = [], []
+                i = 0
+                for i in range(len(valid_point)//self.batch_size):
+                    valid_s, valid_e = i*self.batch_size, (i+1)*self.batch_size
+                    feed_dict = {self.pc: valid_point[valid_s:valid_e],
+                                 self.meta: valid_meta[valid_s:valid_e], 
                                  self.is_training: False}
-                    vel, vcl = sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
+                    vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
                     valid_emd_loss.append(vel)
-                    valid_chamfer_loss.append(vcl)                    
-                    print ('validation emd loss: {}, validation chamfer loss: {}'.format(np.array(valid_emd_loss).mean(),
+                    valid_chamfer_loss.append(vcl)
+
+                feed_dict = {self.pc: valid_point[i*self.batch_size:],
+                             self.meta: valid_meta[i*self.batch_size:], 
+                             self.is_training: False}
+                vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
+                valid_emd_loss.append(vel)
+                valid_chamfer_loss.append(vcl)
+                print ('validation emd loss: {}, validation chamfer loss: {}'.format(np.array(valid_emd_loss).mean(),
                                                                                          np.array(valid_chamfer_loss).mean()))
 
-                    def visualize_sample(sess, sample_points, sample_info, filename=None):
-                        meta = np.array([sample_info[j]['num_points'] for j in range(len(sample_info))])
-                        feed_dict = {self.pc: sample_points, self.meta: meta, self.is_training: False}
-                        sample_generated, sample_loss = sess.run([self.x_reconstr, self.reconstruction_loss], feed_dict)
-                        print ('sampled testing sweep loss: {}'.format(sample_loss))
-                        print ('save reconstructed sweep')
-                        reconstruction = point_cell.reconstruct_scene(sample_generated, sample_info)
-                        if filename == None:
-                            sweep = point_cell.test_sweep[point_cell.sample_idx]
-                        elif filename == 'foreground':
-                            sweep = point_cell.test_f_sweep
-                        elif filename == 'background':
-                            sweep = point_cell.test_b_sweep
+                def visualize_sample(sample_points, sample_info, filename=None):
+                    meta = np.array([sample_info[j]['num_points'] for j in range(len(sample_info))])
+                    feed_dict = {self.pc: sample_points, self.meta: meta, self.is_training: False}
+                    sample_generated, sample_loss = self.sess.run([self.x_reconstr, self.reconstruction_loss], feed_dict)
+                    print ('sampled testing sweep loss: {}'.format(sample_loss))
+                    print ('save reconstructed sweep')
+                    reconstruction = point_cell.reconstruct_scene(sample_generated, sample_info)
+                    if filename == None:
+                        sweep = point_cell.test_sweep[point_cell.sample_idx]
+                    elif filename == 'foreground':
+                        sweep = point_cell.test_f_sweep
+                    elif filename == 'background':
+                        sweep = point_cell.test_b_sweep
 
-                        full_filename = 'orig_'+str(epoch) if filename == None else 'orig_{}_{}'.format(filename, str(epoch))
-                        util.visualize_3d_points(sweep, dir=self.save_path, filename=full_filename)
-                        full_filename = 'recon_'+str(epoch) if filename == None else 'recon_{}_{}'.format(filename, str(epoch))
-                        util.visualize_3d_points(reconstruction, dir=self.save_path, filename=full_filename)
-                        return reconstruction, sweep
-                    
-                    # plot 
-                    if self.fb_split == True:
-                        sample_points, sample_info = point_cell.sample_points_f, point_cell.sample_info_f
-                        rf, sf = visualize_sample(sess, sample_points, sample_info, 'foreground')
-                        sample_points, sample_info = point_cell.sample_points_b, point_cell.sample_info_b
-                        rb, sb = visualize_sample(sess, sample_points, sample_info, 'background')
-                        reconstruction = np.concatenate([rf, rb], 0)
-                        sweep = np.concatenate([sf, sb], 0)
-                        util.visualize_3d_points(sweep, dir=self.save_path, filename='orig_{}'.format(str(epoch)))
-                        util.visualize_3d_points(reconstruction, dir=self.save_path, filename='recon_{}'.format(str(epoch)))
-                    else:
-                        sample_points, sample_info = point_cell.sample_points, point_cell.sample_info
-                        visualize_sample(sess, sample_points, sample_info)
+                    full_filename = 'orig_'+str(epoch) if filename == None else 'orig_{}_{}'.format(filename, str(epoch))
+                    util.visualize_3d_points(sweep, dir=self.save_path, filename=full_filename)
+                    full_filename = 'recon_'+str(epoch) if filename == None else 'recon_{}_{}'.format(filename, str(epoch))
+                    util.visualize_3d_points(reconstruction, dir=self.save_path, filename=full_filename)
+                    return reconstruction, sweep
+                
+                # plot 
+                if self.fb_split == True:
+                    sample_points, sample_info = point_cell.sample_points_f, point_cell.sample_info_f
+                    rf, sf = visualize_sample(sample_points, sample_info, 'foreground')
+                    sample_points, sample_info = point_cell.sample_points_b, point_cell.sample_info_b
+                    rb, sb = visualize_sample(sample_points, sample_info, 'background')
+                    reconstruction = np.concatenate([rf, rb], 0)
+                    sweep = np.concatenate([sf, sb], 0)
+                    util.visualize_3d_points(sweep, dir=self.save_path, filename='orig_{}'.format(str(epoch)))
+                    util.visualize_3d_points(reconstruction, dir=self.save_path, filename='recon_{}'.format(str(epoch)))
+                else:
+                    sample_points, sample_info = point_cell.sample_points, point_cell.sample_info
+                    visualize_sample(sample_points, sample_info)
 
 
                 
@@ -295,12 +301,10 @@ class AutoEncoder():
     def predict(self, points, info, ckpt_name, mode='foreground'):
 
         meta = np.array([info[i]['num_points'] for i in range(len(info))])
-        with tf.Session() as sess:
-            saver = tf.train.Saver()
-            sess.run(tf.global_variables_initializer())
-            saver.restore(sess, os.path.join(self.save_path, ckpt_name))
-            feed_dict = {self.pc: np.array(points), self.meta: meta, self.is_training: False}
-            point_reconstr, reconstr_loss = sess.run([self.x_reconstr, self.reconstruction_loss], feed_dict)
+        self.sess.run(tf.global_variables_initializer())
+        self.saver.restore(self.sess, os.path.join(self.save_path, ckpt_name))
+        feed_dict = {self.pc: np.array(points), self.meta: meta, self.is_training: False}
+        point_reconstr, reconstr_loss = self.sess.run([self.x_reconstr, self.reconstruction_loss], feed_dict)
         return point_reconstr
 
     def compress_cell(self, pc_data):

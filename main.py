@@ -22,7 +22,7 @@ from external.structural_losses.tf_approxmatch import approx_match, match_cost
 FLAGS = tf.flags.FLAGS
 
 # Training options.
-tf.flags.DEFINE_string("save_path", "/scratch2/sniu/pointnet_full_emd/",
+tf.flags.DEFINE_string("save_path", "/scratch4/sniu/pointnet_full_emd/",
                        "Checkpointing directory.")
 tf.flags.DEFINE_string("data_in_dir", "/scratch2/sniu/kitti/",
                        "data input dir")
