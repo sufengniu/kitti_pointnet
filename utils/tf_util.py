@@ -835,14 +835,35 @@ def anchor_decoder(net, is_training, batch_size, num_points, num_anchors, n_filt
     return mu, None
 
 
-def fold(m, n):
-    idx_1 = tf.tile(tf.expand_dims(tf.range(n,dtype=tf.float32), -1), [1,m])
-    idx_2 = tf.tile(tf.expand_dims(tf.range(m,dtype=tf.float32), 0), [n,1])
+def fold2d(num_points, map_size, batch_size):
+    idx_1 = tf.tile(tf.expand_dims(tf.range(m, dtype=tf.float32), -1), [1,n])
+    idx_2 = tf.tile(tf.expand_dims(tf.range(n, dtype=tf.float32), 0), [m,1])
    
     idx_1 = tf.reshape(idx_1, [-1, 1])
     idx_2 = tf.reshape(idx_2, [-1, 1])
    
     return tf.concat([idx_1, idx_2], axis=-1)
+
+def fold3d(num_points, map_size, batch_size):
+    m, n, k = map_size[0], map_size[1], map_size[2]
+    if num_points != np.prod(map_size):
+        print ("unmatched number of points!")
+        raise
+
+    idx_1 = tf.tile(tf.reshape(tf.range(m, dtype=tf.float32), [m,1,1]), [1,n,k])
+    idx_2 = tf.tile(tf.reshape(tf.range(n, dtype=tf.float32), [1,n,1]), [m,1,k])
+    idx_3 = tf.tile(tf.reshape(tf.range(k, dtype=tf.float32), [1,1,k]), [m,n,1])
+   
+    idx_1 = tf.reshape(idx_1, [-1, 1])
+    idx_2 = tf.reshape(idx_2, [-1, 1])
+    idx_3 = tf.reshape(idx_3, [-1, 1])
+
+    local_code = tf.concat([idx_1, idx_2, idx_3], axis=-1)
+    local_code = tf.reshape(local_code, [1, num_points, 3])
+    local_code_tile = tf.tile(local_code, [batch_size, 1, 1])
+
+    return local_code_tile
+
 
 # def dist_stat(recon, orig, meta, num_points_upper_threshold=200):
 #     batch_size = recon.shape[0]
@@ -866,74 +887,3 @@ def fold(m, n):
 
 #     return np.mean(all_dist), np.var(all_dist), np.sum(all_dist**2)
 
-def dist_stat(recon, orig, meta, cell_max_points=200):
-    batch_size = recon.shape[0]
-    num_anchor = recon.shape[1]
-    num_points = orig.shape[1]
-
-    all_dist = np.empty([0])
-    if num_anchor == num_points:
-        for i in range(batch_size):
-            idx = np.arange(min(meta[i], cell_max_points))
-            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
-            dist_vec = np.min(dist_tmp, 1) # [num_points]
-            all_dist = np.concatenate([all_dist, dist_vec])
-    elif num_anchor < num_points:
-        for i in range(batch_size):
-            idx = np.arange(min(meta[i], num_anchor))
-            idx_orig = np.arange(min(meta[i], cell_max_points))
-            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i, idx])
-            dist_vec = np.min(dist_tmp, 1) # [num_points]
-            all_dist = np.concatenate([all_dist, dist_vec])
-
-    return np.mean(all_dist), np.var(all_dist), np.mean(all_dist**2)
-
-
-def dist_vis(recon, orig, meta, num_points_upper_threshold=200):
-    batch_size = recon.shape[0]
-    num_anchor = recon.shape[1]
-    num_points = orig.shape[1]
-
-    all_dist = np.empty([0])
-    if num_anchor == num_points:
-        for i in range(batch_size):
-            idx = np.arange(min(meta[i], num_points_upper_threshold))
-            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
-            dist_vec = np.min(dist_tmp, 1) # [num_points]
-            all_dist = np.concatenate([all_dist, dist_vec])
-    elif num_anchor < num_points:
-        for i in range(batch_size):
-            idx = np.arange(min(meta[i], num_anchor))
-            idx_orig = np.arange(min(meta[i], num_points_upper_threshold))
-            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i, idx])
-            dist_vec = np.min(dist_tmp, 1) # [num_points]
-            all_dist = np.concatenate([all_dist, dist_vec])
-
-    pd.DataFrame(all_dist).plot(kind='density')
-    plt.savefig('dist_distribution')
-    plt.close()
-
-def dist_octree_stat(recon, orig, meta, num_points_upper_threshold=200):
-    batch_size = len(recon)
-    num_anchor = np.array([recon[i].shape[0] for i in range(batch_size)])
-    num_points = orig.shape[1]
-
-    all_dist = np.empty([0])
-    for i in range(batch_size):
-        if recon[i].shape[0] == 0:
-            continue
-        idx = np.arange(min(meta[i], num_anchor[i]))
-        idx_orig = np.arange(min(meta[i], num_points_upper_threshold))
-        dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i][idx])
-        dist_vec = np.min(dist_tmp, 1) # [num_points]
-        all_dist = np.concatenate([all_dist, dist_vec])
-
-    return np.mean(all_dist), np.var(all_dist), np.sum(all_dist**2)
-
-def create_dir(dir_path):
-    ''' Creates a directory (or nested directories) if they don't exist.
-    '''
-    if not osp.exists(dir_path):
-        os.makedirs(dir_path)
-
-    return dir_path

@@ -860,6 +860,81 @@ def find_component_points(components, nr_objects):
 
 
 
+def dist_stat(recon, orig, meta, cell_max_points=200):
+    batch_size = recon.shape[0]
+    num_anchor = recon.shape[1]
+    num_points = orig.shape[1]
+
+    all_dist = np.empty([0])
+    if num_anchor == num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], cell_max_points))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+    elif num_anchor < num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], num_anchor))
+            idx_orig = np.arange(min(meta[i], cell_max_points))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+
+    return np.mean(all_dist), np.var(all_dist), np.mean(all_dist**2)
+
+def sweep_stat(recon, orig):
+    dist = scipy.spatial.distance.cdist(recon, orig) # order must be recon, orig
+    dist_vec = np.min(dist, 1)
+    return np.mean(dist_vec), np.var(dist_vec), np.mean(dist_vec**2)
+
+def dist_vis(recon, orig, meta, num_points_upper_threshold=200):
+    batch_size = recon.shape[0]
+    num_anchor = recon.shape[1]
+    num_points = orig.shape[1]
+
+    all_dist = np.empty([0])
+    if num_anchor == num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], num_points_upper_threshold))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+    elif num_anchor < num_points:
+        for i in range(batch_size):
+            idx = np.arange(min(meta[i], num_anchor))
+            idx_orig = np.arange(min(meta[i], num_points_upper_threshold))
+            dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i, idx])
+            dist_vec = np.min(dist_tmp, 1) # [num_points]
+            all_dist = np.concatenate([all_dist, dist_vec])
+
+    pd.DataFrame(all_dist).plot(kind='density')
+    plt.savefig('dist_distribution')
+    plt.close()
+
+def dist_octree_stat(recon, orig, meta, num_points_upper_threshold=200):
+    batch_size = len(recon)
+    num_anchor = np.array([recon[i].shape[0] for i in range(batch_size)])
+    num_points = orig.shape[1]
+
+    all_dist = np.empty([0])
+    for i in range(batch_size):
+        if recon[i].shape[0] == 0:
+            continue
+        idx = np.arange(min(meta[i], num_anchor[i]))
+        idx_orig = np.arange(min(meta[i], num_points_upper_threshold))
+        dist_tmp = scipy.spatial.distance.cdist(orig[i, idx_orig], recon[i][idx])
+        dist_vec = np.min(dist_tmp, 1) # [num_points]
+        all_dist = np.concatenate([all_dist, dist_vec])
+
+    return np.mean(all_dist), np.var(all_dist), np.sum(all_dist**2)
+
+def create_dir(dir_path):
+    ''' Creates a directory (or nested directories) if they don't exist.
+    '''
+    if not osp.exists(dir_path):
+        os.makedirs(dir_path)
+
+    return dir_path
 
 
 

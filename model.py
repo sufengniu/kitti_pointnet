@@ -32,6 +32,8 @@ class AutoEncoder():
         self.BN_DECAY_DECAY_RATE = 0.5
         self.BN_DECAY_DECAY_STEP = float(self.DECAY_STEP)
         self.BN_DECAY_CLIP = 0.99
+        self.enable_2ndfold = True
+        self.map_size = [8, 8, 8]
         self.encoder_mode = FLAGS.encoder
         self.decoder_mode = FLAGS.decoder
         self.scope = scope
@@ -59,23 +61,35 @@ class AutoEncoder():
                                                              self.is_training)
             elif self.decoder_mode == 'pointgrid':
                 code = tf.expand_dims(code, -2)
-                map_size = [20, 10]
                 global_code_tile = tf.tile(code, [1, self.origin_num_points, 1])
-                local_code = tf_util.fold(map_size[0], map_size[1])
-                local_code = tf.reshape(local_code, [1, self.origin_num_points, 2])
-                local_code_tile = tf.tile(local_code, [batch_size, 1, 1])
-                all_code = tf.concat([local_code_tile, global_code_tile], axis = -1)
+                local_code_tile = tf_util.fold3d(self.origin_num_points, 
+                                                 self.map_size,
+                                                 tf.shape(code)[0])
+                all_code = tf.concat([local_code_tile, global_code_tile], axis=-1)
 
                 net = tf_util.point_conv(all_code, 
                                          self.is_training, 
-                                         n_filters=[100, 100, 50, 10, 3], 
+                                         n_filters=[256, 128, 64], 
                                          activation_function=tf.nn.relu,
                                          name="decoder1")
                 net = tf_util.point_conv(net, 
                                          self.is_training, 
-                                         n_filters=[3], 
+                                         n_filters=[3],
                                          activation_function=None,
                                          name="decoder2")
+                # second folding
+                if self.enable_2ndfold:
+                    net = tf.concat([local_code_tile, net], axis=-1)
+                    net = tf_util.point_conv(net, 
+                                             self.is_training, 
+                                             n_filters=[258, 128, 64], 
+                                             activation_function=tf.nn.relu,
+                                             name="decoder3")
+                    net = tf_util.point_conv(net, 
+                                             self.is_training, 
+                                             n_filters=[3],
+                                             activation_function=None,
+                                             name="decoder4")
                 net = tf.reshape(net, [-1, self.origin_num_points, 3])
                 net_xy = tf.nn.tanh(net[:,:,0:2])
                 net_z = tf.expand_dims(net[:,:,2], -1)
@@ -174,7 +188,7 @@ class AutoEncoder():
                     record_loss.append(emd_loss)
                 elif self.loss_type == 'chamfer':
                     record_loss.append(chamfer_loss)
-                mean, var, mse = tf_util.dist_stat(recon, X, meta, self.origin_num_points)
+                mean, var, mse = util.dist_stat(recon, X, meta, self.origin_num_points)
                 record_mean.append(mean)
                 record_var.append(var)
                 record_mse.append(mse)
@@ -215,9 +229,9 @@ class AutoEncoder():
                 def visualize_sample(sample_points, sample_info, filename=None):
                     meta = np.array([sample_info[j]['num_points'] for j in range(len(sample_info))])
                     feed_dict = {self.pc: sample_points, self.meta: meta, self.is_training: False}
-                    sample_generated, sample_loss = self.sess.run([self.x_reconstr, self.reconstruction_loss], feed_dict)
-                    print ('sampled testing sweep loss: {}'.format(sample_loss))
-                    print ('save reconstructed sweep')
+                    sample_generated, sample_emd, sample_chamfer = self.sess.run([self.x_reconstr, 
+                                                                   self.emd_loss, 
+                                                                   self.chamfer_loss], feed_dict)
                     reconstruction = point_cell.reconstruct_scene(sample_generated, sample_info)
                     if filename == None:
                         sweep = point_cell.test_sweep[point_cell.sample_idx]
@@ -226,6 +240,11 @@ class AutoEncoder():
                     elif filename == 'background':
                         sweep = point_cell.test_b_sweep
 
+                    mean, var, mse = util.sweep_stat(reconstruction, sweep)
+                    print ('sampled sweep emd loss: {}, chamfer loss: {}, MSE: {}'.format(sample_emd,
+                                                                                          sample_chamfer,
+                                                                                          mse))
+                    print ('save reconstructed sweep')
                     full_filename = 'orig_'+str(epoch) if filename == None else 'orig_{}_{}'.format(filename, str(epoch))
                     util.visualize_3d_points(sweep, dir=self.save_path, filename=full_filename)
                     full_filename = 'recon_'+str(epoch) if filename == None else 'recon_{}_{}'.format(filename, str(epoch))

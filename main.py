@@ -67,11 +67,11 @@ tf.flags.DEFINE_integer("top_k", 10,
 
 # training config
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
-tf.flags.DEFINE_integer("num_epochs", 1,
+tf.flags.DEFINE_integer("num_epochs", 500,
                        "number of training epoch")
 tf.flags.DEFINE_integer("decay_step", 200000,
                        "Decay step for lr decay [default: 200000]")
-tf.flags.DEFINE_integer("save_freq", 10,
+tf.flags.DEFINE_integer("save_freq", 20,
                       "learning rate")
 tf.flags.DEFINE_float("learning_rate", 0.001,
                       "learning rate")
@@ -79,8 +79,8 @@ tf.flags.DEFINE_float("learning_rate", 0.001,
 
 
 
-# drives = ['0001', '0002', '0005', '0011']
-drives = ['0001']
+drives = ['0001', '0002', '0005', '0011']
+# drives = ['0001']
 
 # if FLAGS.partition_mode == 0:
 #     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "f_%s_%s" % (FLAGS.compression_mode, FLAGS.loss)))
@@ -92,7 +92,7 @@ drives = ['0001']
 #      train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.cluster_mode, FLAGS.compression_mode, FLAGS.loss)))
 
 def train():
-    tf_util.create_dir(FLAGS.save_path)
+    util.create_dir(FLAGS.save_path)
 
     # step 1 Partition
     point_cell = util.LoadData(args=FLAGS, drives=drives)
