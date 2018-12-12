@@ -4,7 +4,7 @@ import sys
 import os
 import os.path as osp
 import pandas as pd
-
+from tqdm import *
 from functools import partial
 from itertools import repeat
 
@@ -37,7 +37,6 @@ from octree import octree_func
 PointCell = collections.namedtuple('PointCell', (
     'data_id', 'cell_id', 'points', 'centroids', 'scale', 
     'num_points', 'mse', 'var', 'mean'))
-
 
 colors = {
     'Car': 'b',
@@ -473,14 +472,24 @@ class LoadData():
         self.batch_size = args.batch_size
         self.batch_idx = 0
         self.basedir = args.data_in_dir
-        self.L = args.PL
-        self.W = args.PW
+        self.L = list(map(int, args.PL.split(',')))
+        self.W = list(map(int, args.PL.split(',')))
+        self.factor = self.L[1] / self.L[0] if len(self.L) > 1 else 0
+        self.level = len(self.L)
         self.fb_split = args.fb_split
-        self.cell_max_points = args.cell_max_points
-        self.cell_min_points = args.cell_min_points
+        self.cell_max_points = list(map(int, args.cell_max_points.split(',')))
+        self.cell_min_points = list(map(int, args.cell_min_points.split(',')))
         self.max_x_dist = 16.0
         self.max_y_dist = 16.0
         self.max_z_dist = 3.0
+
+        self.columns = ['points', 'parent', 'index', 'ratio', 'center', 'level', 'num_points']
+        if self.level > 1:
+            self.cell_set = []
+            for i in range(self.level):
+                self.cell_set.append(pd.DataFrame(columns=self.columns))
+        else:
+            self.cell_set = [pd.DataFrame(columns=self.columns)]
 
         self.data_id = []
         self.dataset_gray, self.dataset_rgb, self.dataset_velo = [], [], []
@@ -510,34 +519,23 @@ class LoadData():
         self.test_sweep = self.cleaned_velo[test_sweep_split:]
 
         if self.fb_split == True:
-            self.train_cell_f, self.train_cell_info_f, \
-            self.valid_cell_f, self.valid_cell_info_f, \
-            self.train_cell_b, self.train_cell_info_b, \
-            self.valid_cell_b, self.valid_cell_info_b = self.fb_partition_batch(self.cleaned_velo[:test_sweep_split],
-                                                                                train_valid_split=True)
-            self.test_cell_f, self.test_cell_info_f, _, _, \
-            self.test_cell_b, self.test_cell_info_b, _, _, = self.fb_partition_batch(self.test_sweep,
-                                                                                     train_valid_split=False)
-            self.train_cell_f, self.train_cell_info_f = self.shuffle(self.train_cell_f, self.train_cell_info_f)
-            self.train_cell_b, self.train_cell_info_b = self.shuffle(self.train_cell_b, self.train_cell_info_b)
+            self.fb_partition_batch(self.cleaned_velo[:test_sweep_split])
 
-            print ("total foreground training set: {}, validation set: {}, testing set: {}".format(len(self.train_cell_f), 
-                                                                                                   len(self.valid_cell_f),
-                                                                                                   len(self.test_cell_f)))  
-            print ("total background training set: {}, validation set: {}, testing set: {}".format(len(self.train_cell_b), 
-                                                                                                   len(self.valid_cell_b),
-                                                                                                   len(self.test_cell_b)))  
+            print ("total foreground training set: {}, validation set: {}, testing set: {}".format(self.train_cell_f[0].shape[0], 
+                                                                                                   self.valid_cell_f[0].shape[0],
+                                                                                                   self.test_cell_f[0].shape[0]))  
+            print ("total background training set: {}, validation set: {}, testing set: {}".format(self.train_cell_b[0].shape[0], 
+                                                                                                   self.valid_cell_b[0].shape[0],
+                                                                                                   self.test_cell_b[0].shape[0]))
 
         else:
-            self.train_cell, self.train_cell_info, \
-            self.valid_cell, self.valid_cell_info = self.partition_batch(self.cleaned_velo[:test_sweep_split], 
-                                                                         train_valid_split=True)
-            self.test_cell, self.test_cell_info, _, _ = self.partition_batch(self.test_sweep, train_valid_split=False)
-            self.train_cell, self.train_cell_info = self.shuffle(self.train_cell, self.train_cell_info)
+            self.train_cell, \
+            self.valid_cell, \
+            self.test_cell = self.partition_batch(self.cleaned_velo[:test_sweep_split])
 
-            print ("total training set: {}, validation set: {}, testing set: {}".format(len(self.train_cell), 
-                                                                                        len(self.valid_cell),
-                                                                                        len(self.test_cell)))
+            print ("total training set: {}, validation set: {}, testing set: {}".format(self.train_cell[0].shape[0], 
+                                                                                        self.valid_cell[0].shape[0],
+                                                                                        self.test_cell[0].shape[0]))
         print ("batch size: {}".format(self.batch_size))
 
         # sample
@@ -547,20 +545,20 @@ class LoadData():
         if self.fb_split == True:
             f_points, b_points = rough_LBS(self.test_sweep[self.sample_idx])
             self.test_f_sweep, self.test_b_sweep = f_points, b_points
-            self.sample_points_f, self.sample_info_f = self.partition_single(f_points, self.sample_idx)
-            self.sample_points_b, self.sample_info_b = self.partition_single(b_points, self.sample_idx)
+            self.sample_points_f = self.partition_single(f_points, self.sample_idx)
+            self.sample_points_b = self.partition_single(b_points, self.sample_idx)
             # training set, see if overfitting
             f_points_t, b_points_t = rough_LBS(self.cleaned_velo[self.sample_idx_train])
             self.train_f_sweep, self.train_b_sweep = f_points_t, b_points_t
-            self.train_points_f, self.train_info_f = self.partition_single(f_points_t, self.sample_idx_train)
-            self.train_points_b, self.train_info_b = self.partition_single(b_points_t, self.sample_idx_train)
+            self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)
+            self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)
             
         else:
-            self.sample_points, self.sample_info = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)
+            self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)
             # training set, see if overfitting
-            self.train_points, self.train_info = self.partition_single(self.cleaned_velo[self.sample_idx_train], self.sample_idx_train)
+            self.train_points = self.partition_single(self.cleaned_velo[self.sample_idx_train], self.sample_idx_train)
 
-    def fb_partition_batch(self, cleaned_velo, train_valid_split=True):
+    def fb_partition_batch(self, cleaned_velo):
 
         foreground, background = [], []
         for points in cleaned_velo:
@@ -568,102 +566,86 @@ class LoadData():
             foreground.append(f_points)
             background.append(b_points)
 
-        train_cell_f, train_cell_info_f, \
-        valid_cell_f, valid_cell_info_f = self.partition_batch(foreground, train_valid_split)
+        train_cell_f, \
+        valid_cell_f, \
+        test_cell_f = self.partition_batch(foreground)
 
-        train_cell_b, train_cell_info_b, \
-        valid_cell_b, valid_cell_info_b = self.partition_batch(background, train_valid_split)
+        train_cell_b, \
+        valid_cell_b, \
+        test_cell_b = self.partition_batch(background)
 
-        return_list = [train_cell_f, train_cell_info_f, valid_cell_f, valid_cell_info_f]
-        return_list += [train_cell_b, train_cell_info_b, valid_cell_b, valid_cell_info_b]
+        self.train_cell_f, self.valid_cell_f, self.test_cell_f = train_cell_f, valid_cell_f, test_cell_f
+        self.train_cell_b, self.valid_cell_b, self.test_cell_b = train_cell_b, valid_cell_b, test_cell_b
+        return
 
-        return return_list
+    def partition_batch(self, cleaned_velo):
+        cell_points = [[] for _ in range(self.level)]
+        print ('partitioning...')
+        for idx, points in enumerate(tqdm(cleaned_velo)):
+            for l in range(self.level):
+                cell_points_buf = self.partition_single(points, idx)
+                cell_points[l].append(cell_points_buf[l])
 
-    def partition_batch(self, cleaned_velo, train_valid_split=True):
-        cell_points = []
-        cell_info = []
+        train_cell, valid_cell, test_cell = [], [], []
+        for l in range(self.level):
+            cell_points[l] = pd.concat(cell_points[l])
+            self.cell_set[l] = cell_points[l]
+            train_split = int(0.9 * cell_points[l].shape[0])
+            valid_split = int(0.95 * cell_points[l].shape[0])
 
-        for idx, points in enumerate(cleaned_velo):
-            xyz_max = np.max(points, 0)
-            xyz_min = np.min(points, 0)
-            cell_width, cell_length = (xyz_max[0]-xyz_min[0])/self.W, (xyz_max[1]-xyz_min[1])/self.L
+            train_buf = cell_points[l][:train_split]
+            train_buf = train_buf.iloc[np.random.permutation(np.arange(len(train_buf)))]
+            train_cell.append(train_buf)
+            valid_cell.append(cell_points[l][train_split:valid_split])
+            test_cell.append(cell_points[l][valid_split:])
 
-            # partition into a LxW grid
-            for i in range(self.L):
-                for j in range(self.W):
+        return train_cell, valid_cell, test_cell
+        
+    def partition_single(self, points, idx):
+        xyz_max = np.max(points, 0)
+        xyz_min = np.min(points, 0)
+        
+        multi_cell = []
+        # partition into a LxW grid
+        for k in range(self.level):
+            L, W = self.L[k], self.W[k]
+            cell_width, cell_length = (xyz_max[0]-xyz_min[0])/W, (xyz_max[1]-xyz_min[1])/L
+            index = np.arange(L*W)
+            cell_points = pd.DataFrame(index=index, columns=self.columns)
+            for i in range(L):
+                for j in range(W):
                     left, right = xyz_min[0]+i*cell_width, xyz_min[0]+(i+1)*cell_width 
                     up, down = xyz_min[1]+j*cell_length, xyz_min[1]+(j+1)*cell_length
                     cell_idx = np.where(np.logical_and(np.logical_and(points[:,0]>=left, points[:,0]<right), np.logical_and(points[:,1]>=up, points[:,1]<down)))[0]
                     num_points = len(cell_idx)
-                    if num_points < self.cell_min_points:
+
+                    if num_points < self.cell_min_points[k]:
                         continue
 
-                    if num_points > self.cell_max_points: # if greater than max points, random sample
-                        sample_index = np.random.choice(num_points, self.cell_max_points, replace=False)
-                        cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points)
-                    elif num_points < self.cell_max_points:
-                        new_point = np.zeros([self.cell_max_points, 3])
+                    if num_points > self.cell_max_points[k]: # if greater than max points, random sample
+                        sample_index = np.random.choice(num_points, self.cell_max_points[k], replace=False)
+                        cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[k])
+                    elif num_points < self.cell_max_points[k]:
+                        new_point = np.zeros([self.cell_max_points[k], 3])
                         new_point[:num_points] = points[cell_idx]
                         cell, ratio, center = rescale(new_point, num_points)
 
-                    cell_points.append(cell)
-                    single_cell_info = {'index': idx,
-                                        'ratio': ratio,
-                                        'center': center,
-                                        'num_points': min(num_points, self.cell_max_points)}
-                    cell_info.append(single_cell_info)
+                    cell_idx = i*W+j
+                    cell_points.iloc[cell_idx]['points'] = cell
+                    if k > 0:
+                        I, J = i//self.factor, j//self.factor
+                        parent_idx = int(I*self.W[k-1]+J)
+                        cell_points.iloc[cell_idx]['parent'] = multi_cell[-1].iloc[parent_idx]['points']
+                    cell_points.iloc[cell_idx]['index'] = idx
+                    cell_points.iloc[cell_idx]['ratio'] = ratio
+                    cell_points.iloc[cell_idx]['center'] = center
+                    cell_points.iloc[cell_idx]['level'] = k
+                    cell_points.iloc[cell_idx]['num_points'] = min(num_points, self.cell_max_points[k])
+            multi_cell.append(cell_points)
 
-        if train_valid_split == True:
-            train_split = int(0.95*len(cell_points))
-            train_cell, train_cell_info = cell_points[:train_split], cell_info[:train_split]
-            valid_cell, valid_cell_info = cell_points[train_split:], cell_info[train_split:]
-            return_list = [train_cell, train_cell_info, valid_cell, valid_cell_info]
-        else:
-            return_list = [cell_points, cell_info, None, None]
-
-        return return_list
-        
-    def shuffle(self, train_cell, train_cell_info, seed=None):
-        num_examples = len(train_cell)
-        if seed is not None:
-            np.random.seed(seed)
-        perm = np.arange(num_examples)
-        np.random.shuffle(perm)
-        train_cell = [train_cell[index] for index in perm]
-        train_cell_info = [train_cell_info[index] for index in perm]
-        return train_cell, train_cell_info
-
-    def partition_single(self, points, idx):
-        xyz_max = np.max(points, 0)
-        xyz_min = np.min(points, 0)
-        cell_width, cell_length = (xyz_max[0]-xyz_min[0])/self.W, (xyz_max[1]-xyz_min[1])/self.L
-
-        # partition into a LxW grid
-        cell_points, cell_info = [], []
-        for i in range(self.L):
-            for j in range(self.W):
-                left, right = xyz_min[0]+i*cell_width, xyz_min[0]+(i+1)*cell_width 
-                up, down = xyz_min[1]+j*cell_length, xyz_min[1]+(j+1)*cell_length
-                cell_idx = np.where(np.logical_and(np.logical_and(points[:,0]>=left, points[:,0]<right), np.logical_and(points[:,1]>=up, points[:,1]<down)))[0]
-                num_points = len(cell_idx)
-                if num_points < self.cell_min_points:
-                    continue
-
-                if num_points > self.cell_max_points: # if greater than max points, random sample
-                    sample_index = np.random.choice(num_points, self.cell_max_points, replace=False)
-                    cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points)
-                elif num_points < self.cell_max_points:
-                    new_point = np.zeros([self.cell_max_points, 3])
-                    new_point[:num_points] = points[cell_idx]
-                    cell, ratio, center = rescale(new_point, num_points)
-
-                cell_points.append(cell)
-                single_cell_info = {'index': idx,
-                                    'ratio': ratio,
-                                    'center': center,
-                                    'num_points': num_points}
-                cell_info.append(single_cell_info)
-        return cell_points, cell_info
+        for k in range(self.level):
+            multi_cell[k] = multi_cell[k].dropna(thresh=2)
+        return multi_cell
 
     def reconstruct_scene(self, cell_points, cell_info):
         scene = []

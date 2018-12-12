@@ -10,6 +10,7 @@ import os
 import os.path as osp
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 from model import AutoEncoder
@@ -36,13 +37,13 @@ tf.flags.DEFINE_string("partition_mode", 'grid',
                        "currently only support regular grid partition")
 tf.flags.DEFINE_boolean("fb_split", False, 
                        "if split data as foreground and background")
-tf.flags.DEFINE_integer("PW", 32, 
-                       "number of partitions for wideth") # x: width, y: length
-tf.flags.DEFINE_integer("PL", 32, 
-                       "number of partition for length")
-tf.flags.DEFINE_integer("cell_max_points", 512, 
+tf.flags.DEFINE_string("PW", '32', # x: width, y: length, coarse grain ,...., fine grain
+                       "number of partitions for wideth, if it is list, it becomes the multi-scale") 
+tf.flags.DEFINE_string("PL", '32', 
+                       "number of partition for length, same as PW")
+tf.flags.DEFINE_string("cell_max_points", '512', 
                        "maximum number of points in the cell")
-tf.flags.DEFINE_integer("cell_min_points", 50, 
+tf.flags.DEFINE_string("cell_min_points", '50', 
                        "minimum number of points in the cell")
 # tf.flags.DEFINE_string("cluster_mode", 'kmeans',
 #                        "kmeans, spectral, dirichlet")
@@ -79,8 +80,8 @@ tf.flags.DEFINE_float("learning_rate", 0.001,
 
 
 
-drives = ['0001', '0002', '0005', '0011']
-# drives = ['0001']
+# drives = ['0001', '0002', '0005', '0011']
+drives = ['0001']
 
 # if FLAGS.partition_mode == 0:
 #     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "f_%s_%s" % (FLAGS.compression_mode, FLAGS.loss)))
