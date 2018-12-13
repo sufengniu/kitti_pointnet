@@ -649,10 +649,11 @@ class LoadData():
 
     def reconstruct_scene(self, cell_points, cell_info):
         scene = []
-        for cell, single_cell_info in zip(cell_points, cell_info):
-            num_points = single_cell_info['num_points']
-            scaled_cell = cell[:num_points] / single_cell_info['ratio']
-            scaled_cell += single_cell_info['center']
+        for i in range(len(cell_info)):
+            cell = cell_points[i]
+            num_points = cell_info.iloc[i]['num_points']
+            scaled_cell = cell[:num_points] / cell_info.iloc[i]['ratio']
+            scaled_cell += cell_info.iloc[i]['center']
             scene.append(scaled_cell)
         return np.concatenate(scene, axis=0)
 

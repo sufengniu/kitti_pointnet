@@ -79,9 +79,8 @@ tf.flags.DEFINE_float("learning_rate", 0.001,
 
 
 
-
-# drives = ['0001', '0002', '0005', '0011']
-drives = ['0001']
+drives = ['0001', '0002', '0005', '0011']
+# drives = ['0001']
 
 # if FLAGS.partition_mode == 0:
 #     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "f_%s_%s" % (FLAGS.compression_mode, FLAGS.loss)))
@@ -98,17 +97,21 @@ def train():
     # step 1 Partition
     point_cell = util.LoadData(args=FLAGS, drives=drives)
 
-    if FLAGS.fb_split == True:
-      # step 2 compression
-      model_f = AutoEncoder(FLAGS)
-      model_f.train(point_cell, mode='foreground')
+    level = len(list(map(int, FLAGS.PL.split(','))))
+    print ('training grain from corase to fine')
+    models = []
+    for l in range(level):
+        if FLAGS.fb_split == True:
+            # step 2 compression
+            model_f = AutoEncoder(FLAGS, l)
+            model_f.train(point_cell, mode='foreground')
 
-      model_d = AutoEncoder(FLAGS)
-      model_d.train(point_cell, mode='background')
+            model_d = AutoEncoder(FLAGS, l)
+            model_d.train(point_cell, mode='background')
 
-    else:
-      model = AutoEncoder(FLAGS)
-      model.train(point_cell)
+        else:
+            models.append(AutoEncoder(FLAGS, l))
+            models[i].train(point_cell)
 
 
     # step 3 merge
