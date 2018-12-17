@@ -467,14 +467,14 @@ def rescale(point_cloud, num_points):
     return new_point, ratio, center
 
 class LoadData():
-    def __init__(self, args, drives):
+    def __init__(self, args, train_drives, test_drives):
         
         self.batch_size = args.batch_size
         self.batch_idx = 0
         self.basedir = args.data_in_dir
         self.L = list(map(int, args.PL.split(',')))
         self.W = list(map(int, args.PL.split(',')))
-        self.factor = self.L[1] / self.L[0] if len(self.L) > 1 else 0
+        self.factor = self.L[1] / self.L[0] if len(self.L) > 1 else 1
         self.level = len(self.L)
         self.fb_split = args.fb_split
         self.cell_max_points = list(map(int, args.cell_max_points.split(',')))
@@ -491,20 +491,26 @@ class LoadData():
         else:
             self.cell_set = [pd.DataFrame(columns=self.columns)]
 
+        # processing training drives
         self.data_id = []
-        self.dataset_gray, self.dataset_rgb, self.dataset_velo = [], [], []
-        for drive in drives:
+        self.train_dataset_gray, self.train_dataset_rgb, self.train_dataset_velo = [], [], []
+        self.test_dataset_gray, self.test_dataset_rgb, self.test_dataset_velo = [], [], []
+        num_to_select = 10
+        for drive in train_drives:
             dataset = load_dataset(args.date, drive, self.basedir)
             self.data_id += [args.date + '_' + drive]
+            data_len = len(list(dataset.velo))
+            Idx = random.sample(range(data_len), num_to_select)
             # for visualization
             # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
             # frame = 10 # for visualization
             # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
-            self.dataset_gray += list(dataset.gray)
-            self.dataset_rgb += list(dataset.rgb)
-            self.dataset_velo += list(dataset.velo)
-        self.cleaned_velo = []
-        for points in self.dataset_velo:
+            self.train_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+            self.train_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+            self.train_dataset_velo += [list(dataset.velo)[i] for i in Idx]
+        
+        self.train_cleaned_velo = []
+        for points in self.train_dataset_velo:
             idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
             idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
             idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
@@ -513,14 +519,36 @@ class LoadData():
             # testing
             # index = random.sample(range(0, len(filter_data)-1), 20000)
             # self.cleaned_velo.append(filter_data[index])
-            self.cleaned_velo.append(filter_data) # ignore the 4th dimension
+            self.train_cleaned_velo.append(filter_data) # ignore the 4th dimension
 
-        test_sweep_split = int(0.95*len(self.cleaned_velo))
-        self.test_sweep = self.cleaned_velo[test_sweep_split:]
+        for drive in test_drives:
+            dataset = load_dataset(args.date, drive, self.basedir)
+            self.data_id += [args.date + '_' + drive]
+            data_len = len(list(dataset.velo))
+            Idx = random.sample(range(data_len), num_to_select)
+            self.test_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+            self.test_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+            self.test_dataset_velo += [list(dataset.velo)[i] for i in Idx]
 
+        self.test_cleaned_velo = []
+        for points in self.test_dataset_velo:
+            idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
+            idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
+            idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
+            idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
+            filter_data = np.delete(points, idx, axis=0)[:,:3]
+            self.test_cleaned_velo.append(filter_data) # ignore the 4th dimension
+
+        self.test_sweep = self.test_cleaned_velo
+        valid_split = int(len(self.train_cleaned_velo)*0.9)
         if self.fb_split == True:
-            self.fb_partition_batch(self.cleaned_velo[:test_sweep_split])
-
+            print ('partitioning training set...')
+            self.train_cell_f, self.train_cell_b = self.fb_partition_batch(self.train_cleaned_velo[:valid_split])
+            print ('partitioning validation set...')
+            self.valid_cell_f, self.valid_cell_b = self.fb_partition_batch(self.train_cleaned_velo[valid_split:])
+            print ('partitioning testing set...')
+            self.test_cell_f, self.test_cell_b = self.fb_partition_batch(self.test_cleaned_velo)
+            
             print ("total foreground training set: {}, validation set: {}, testing set: {}".format(self.train_cell_f[0].shape[0], 
                                                                                                    self.valid_cell_f[0].shape[0],
                                                                                                    self.test_cell_f[0].shape[0]))  
@@ -529,9 +557,12 @@ class LoadData():
                                                                                                    self.test_cell_b[0].shape[0]))
 
         else:
-            self.train_cell, \
-            self.valid_cell, \
-            self.test_cell = self.partition_batch(self.cleaned_velo[:test_sweep_split])
+            print ('partitioning training set...')
+            self.train_cell = self.partition_batch(self.train_cleaned_velo[:valid_split])
+            print ('partitioning validation set...')
+            self.valid_cell = self.partition_batch(self.train_cleaned_velo[valid_split:])
+            print ('partitioning testing set...')
+            self.test_cell = self.partition_batch(self.test_cleaned_velo)
 
             print ("total training set: {}, validation set: {}, testing set: {}".format(self.train_cell[0].shape[0], 
                                                                                         self.valid_cell[0].shape[0],
@@ -540,23 +571,24 @@ class LoadData():
 
         # sample
         self.sample_idx = randint(0, len(self.test_sweep)-1)
-        self.sample_idx_train = randint(0, len(self.cleaned_velo[:test_sweep_split])-1)
+        self.sample_idx_train = randint(0, len(self.train_cleaned_velo)-1)
 
         if self.fb_split == True:
             f_points, b_points = rough_LBS(self.test_sweep[self.sample_idx])
             self.test_f_sweep, self.test_b_sweep = f_points, b_points
-            self.sample_points_f = self.partition_single(f_points, self.sample_idx)
-            self.sample_points_b = self.partition_single(b_points, self.sample_idx)
+            self.sample_points_f = self.partition_single(f_points, self.sample_idx)[0]
+            self.sample_points_b = self.partition_single(b_points, self.sample_idx)[0]
             # training set, see if overfitting
-            f_points_t, b_points_t = rough_LBS(self.cleaned_velo[self.sample_idx_train])
+            f_points_t, b_points_t = rough_LBS(self.train_cleaned_velo[self.sample_idx_train])
             self.train_f_sweep, self.train_b_sweep = f_points_t, b_points_t
-            self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)
-            self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)
+            self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)[0]
+            self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)[0]
             
         else:
-            self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)
+            self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)[0]
             # training set, see if overfitting
-            self.train_points = self.partition_single(self.cleaned_velo[self.sample_idx_train], self.sample_idx_train)
+            self.train_points = self.partition_single(self.train_cleaned_velo[self.sample_idx_train], self.sample_idx_train)[0]
+
 
     def fb_partition_batch(self, cleaned_velo):
 
@@ -566,40 +598,29 @@ class LoadData():
             foreground.append(f_points)
             background.append(b_points)
 
-        train_cell_f, \
-        valid_cell_f, \
-        test_cell_f = self.partition_batch(foreground)
+        data_cell_f = self.partition_batch(foreground)
 
-        train_cell_b, \
-        valid_cell_b, \
-        test_cell_b = self.partition_batch(background)
+        data_cell_b = self.partition_batch(background)
 
-        self.train_cell_f, self.valid_cell_f, self.test_cell_f = train_cell_f, valid_cell_f, test_cell_f
-        self.train_cell_b, self.valid_cell_b, self.test_cell_b = train_cell_b, valid_cell_b, test_cell_b
-        return
+        return data_cell_f, data_cell_b
 
     def partition_batch(self, cleaned_velo):
         cell_points = [[] for _ in range(self.level)]
-        print ('partitioning...')
         for idx, points in enumerate(tqdm(cleaned_velo)):
             for l in range(self.level):
                 cell_points_buf = self.partition_single(points, idx)
                 cell_points[l].append(cell_points_buf[l])
 
-        train_cell, valid_cell, test_cell = [], [], []
+        data_cell = []
         for l in range(self.level):
             cell_points[l] = pd.concat(cell_points[l])
             self.cell_set[l] = cell_points[l]
-            train_split = int(0.9 * cell_points[l].shape[0])
-            valid_split = int(0.95 * cell_points[l].shape[0])
 
-            train_buf = cell_points[l][:train_split]
-            train_buf = train_buf.iloc[np.random.permutation(np.arange(len(train_buf)))]
-            train_cell.append(train_buf)
-            valid_cell.append(cell_points[l][train_split:valid_split])
-            test_cell.append(cell_points[l][valid_split:])
+            data_buf = cell_points[l]
+            data_buf = data_buf.iloc[np.random.permutation(np.arange(len(data_buf)))]
+            data_cell.append(data_buf)
 
-        return train_cell, valid_cell, test_cell
+        return data_cell
         
     def partition_single(self, points, idx):
         xyz_max = np.max(points, 0)
@@ -625,14 +646,14 @@ class LoadData():
                     if num_points > self.cell_max_points[k]: # if greater than max points, random sample
                         sample_index = np.random.choice(num_points, self.cell_max_points[k], replace=False)
                         cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[k])
-                    elif num_points < self.cell_max_points[k]:
+                    elif num_points <= self.cell_max_points[k]:
                         new_point = np.zeros([self.cell_max_points[k], 3])
                         new_point[:num_points] = points[cell_idx]
                         cell, ratio, center = rescale(new_point, num_points)
 
                     cell_idx = i*W+j
                     cell_points.iloc[cell_idx]['points'] = cell
-                    if k > 0:
+                    if k < self.level-1:
                         I, J = i//self.factor, j//self.factor
                         parent_idx = int(I*self.W[k-1]+J)
                         cell_points.iloc[cell_idx]['parent'] = multi_cell[-1].iloc[parent_idx]['points']
@@ -659,6 +680,231 @@ class LoadData():
 
     def all_data(self):
         return self.cell_points
+
+
+# class LoadData():
+#     def __init__(self, args, train_drives, test_drives):
+        
+#         self.batch_size = args.batch_size
+#         self.batch_idx = 0
+#         self.basedir = args.data_in_dir
+#         self.L = list(map(int, args.PL.split(',')))
+#         self.W = list(map(int, args.PL.split(',')))
+#         self.factor = self.L[1] / self.L[0] if len(self.L) > 1 else 1
+#         self.level = len(self.L)
+#         self.fb_split = args.fb_split
+#         self.cell_max_points = list(map(int, args.cell_max_points.split(',')))
+#         self.cell_min_points = list(map(int, args.cell_min_points.split(',')))
+#         self.max_x_dist = 16.0
+#         self.max_y_dist = 16.0
+#         self.max_z_dist = 3.0
+
+#         self.columns = ['points', 'children', 'index', 'ratio', 'center', 'level', 'num_points']
+#         if self.level > 1:
+#             self.cell_set = []
+#             for i in range(self.level):
+#                 self.cell_set.append(pd.DataFrame(columns=self.columns))
+#         else:
+#             self.cell_set = [pd.DataFrame(columns=self.columns)]
+
+#         # processing training drives
+#         self.data_id = []
+#         self.train_dataset_gray, self.train_dataset_rgb, self.train_dataset_velo = [], [], []
+#         self.test_dataset_gray, self.test_dataset_rgb, self.test_dataset_velo = [], [], []
+#         num_to_select = 10
+#         for drive in train_drives:
+#             dataset = load_dataset(args.date, drive, self.basedir)
+#             self.data_id += [args.date + '_' + drive]
+#             data_len = len(list(dataset.velo))
+#             Idx = random.sample(range(data_len), num_to_select)
+#             # for visualization
+#             # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
+#             # frame = 10 # for visualization
+#             # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
+#             self.train_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+#             self.train_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+#             self.train_dataset_velo += [list(dataset.velo)[i] for i in Idx]
+        
+#         self.train_cleaned_velo = []
+#         for points in self.train_dataset_velo:
+#             idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
+#             idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
+#             idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
+#             idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
+#             filter_data = np.delete(points, idx, axis=0)[:,:3]
+#             # testing
+#             # index = random.sample(range(0, len(filter_data)-1), 20000)
+#             # self.cleaned_velo.append(filter_data[index])
+#             self.train_cleaned_velo.append(filter_data) # ignore the 4th dimension
+
+#         for drive in test_drives:
+#             dataset = load_dataset(args.date, drive, self.basedir)
+#             self.data_id += [args.date + '_' + drive]
+#             data_len = len(list(dataset.velo))
+#             Idx = random.sample(range(data_len), num_to_select)
+#             self.test_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+#             self.test_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+#             self.test_dataset_velo += [list(dataset.velo)[i] for i in Idx]
+
+#         self.test_cleaned_velo = []
+#         for points in self.test_dataset_velo:
+#             idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
+#             idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
+#             idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
+#             idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
+#             filter_data = np.delete(points, idx, axis=0)[:,:3]
+#             self.test_cleaned_velo.append(filter_data) # ignore the 4th dimension
+
+#         self.test_sweep = self.test_cleaned_velo
+#         valid_split = int(len(self.train_cleaned_velo)*0.9)
+#         if self.fb_split == True:
+#             print ('partitioning training set...')
+#             self.train_cell_f, self.train_cell_b = self.fb_partition_batch(self.train_cleaned_velo[:valid_split])
+#             print ('partitioning validation set...')
+#             self.valid_cell_f, self.valid_cell_b = self.fb_partition_batch(self.train_cleaned_velo[valid_split:])
+#             print ('partitioning testing set...')
+#             self.test_cell_f, self.test_cell_b = self.fb_partition_batch(self.test_cleaned_velo)
+            
+#             print ("total foreground training set: {}, validation set: {}, testing set: {}".format(self.train_cell_f[0].shape[0], 
+#                                                                                                    self.valid_cell_f[0].shape[0],
+#                                                                                                    self.test_cell_f[0].shape[0]))  
+#             print ("total background training set: {}, validation set: {}, testing set: {}".format(self.train_cell_b[0].shape[0], 
+#                                                                                                    self.valid_cell_b[0].shape[0],
+#                                                                                                    self.test_cell_b[0].shape[0]))
+
+#         else:
+#             print ('partitioning training set...')
+#             self.train_cell = self.partition_batch(self.train_cleaned_velo[:valid_split])
+#             print ('partitioning validation set...')
+#             self.valid_cell = self.partition_batch(self.train_cleaned_velo[valid_split:])
+#             print ('partitioning testing set...')
+#             self.test_cell = self.partition_batch(self.test_cleaned_velo)
+
+#             print ("total training set: {}, validation set: {}, testing set: {}".format(self.train_cell[0].shape[0], 
+#                                                                                         self.valid_cell[0].shape[0],
+#                                                                                         self.test_cell[0].shape[0]))
+#         print ("batch size: {}".format(self.batch_size))
+
+#         # sample
+#         self.sample_idx = randint(0, len(self.test_sweep)-1)
+#         self.sample_idx_train = randint(0, len(self.train_cleaned_velo)-1)
+
+#         if self.fb_split == True:
+#             f_points, b_points = rough_LBS(self.test_sweep[self.sample_idx])
+#             self.test_f_sweep, self.test_b_sweep = f_points, b_points
+#             self.sample_points_f = self.partition_single(f_points, self.sample_idx)[0]
+#             self.sample_points_b = self.partition_single(b_points, self.sample_idx)[0]
+#             # training set, see if overfitting
+#             f_points_t, b_points_t = rough_LBS(self.train_cleaned_velo[self.sample_idx_train])
+#             self.train_f_sweep, self.train_b_sweep = f_points_t, b_points_t
+#             self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)[0]
+#             self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)[0]
+            
+#         else:
+#             self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)[0]
+#             # training set, see if overfitting
+#             self.train_points = self.partition_single(self.train_cleaned_velo[self.sample_idx_train], self.sample_idx_train)[0]
+
+
+#     def fb_partition_batch(self, cleaned_velo):
+
+#         foreground, background = [], []
+#         for points in cleaned_velo:
+#             f_points, b_points = rough_LBS(points)
+#             foreground.append(f_points)
+#             background.append(b_points)
+
+#         data_cell_f = self.partition_batch(foreground)
+
+#         data_cell_b = self.partition_batch(background)
+
+#         return data_cell_f, data_cell_b
+
+#     def partition_batch(self, cleaned_velo):
+#         cell_points = [[] for _ in range(self.level)]
+#         for idx, points in enumerate(tqdm(cleaned_velo)):
+#             for l in range(self.level):
+#                 cell_points_buf = self.partition_single(points, idx)
+#                 cell_points[l].append(cell_points_buf[l])
+
+#         data_cell = []
+#         for l in range(self.level):
+#             cell_points[l] = pd.concat(cell_points[l])
+#             self.cell_set[l] = cell_points[l]
+
+#             data_buf = cell_points[l]
+#             data_buf = data_buf.iloc[np.random.permutation(np.arange(len(data_buf)))]
+#             data_cell.append(data_buf)
+
+#         return data_cell
+        
+#     def partition_single(self, points, idx):
+#         xyz_max = np.max(points, 0)
+#         xyz_min = np.min(points, 0)
+        
+#         multi_cell = []
+#         # partition into a LxW grid
+#         for k in range(self.level-1, -1, -1):
+#             L, W = self.L[k], self.W[k]
+#             cell_width, cell_length = (xyz_max[0]-xyz_min[0])/W, (xyz_max[1]-xyz_min[1])/L
+#             index = np.arange(L*W)
+#             cell_points = pd.DataFrame(index=index, columns=self.columns)
+#             for i in range(L):
+#                 for j in range(W):
+#                     left, right = xyz_min[0]+i*cell_width, xyz_min[0]+(i+1)*cell_width 
+#                     up, down = xyz_min[1]+j*cell_length, xyz_min[1]+(j+1)*cell_length
+#                     cell_idx = np.where(np.logical_and(np.logical_and(points[:,0]>=left, points[:,0]<right), np.logical_and(points[:,1]>=up, points[:,1]<down)))[0]
+#                     num_points = len(cell_idx)
+
+#                     if num_points < self.cell_min_points[k]:
+#                         continue
+
+#                     if num_points > self.cell_max_points[k]: # if greater than max points, random sample
+#                         sample_index = np.random.choice(num_points, self.cell_max_points[k], replace=False)
+#                         cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[k])
+#                     elif num_points <= self.cell_max_points[k]:
+#                         new_point = np.zeros([self.cell_max_points[k], 3])
+#                         new_point[:num_points] = points[cell_idx]
+#                         cell, ratio, center = rescale(new_point, num_points)
+
+#                     cell_idx = i*W+j
+#                     cell_points.iloc[cell_idx]['points'] = cell
+#                     if k < self.level-1:
+#                         children = []
+#                         I, J = i*self.factor, j*self.factor
+#                         dij = []
+#                         for r in range(int(self.factor)):
+#                             for c in range(int(self.factor)):
+#                                 children_idx = int((I+r)*self.W[k+1]+(J+c))
+#                                 ch = multi_cell[-1].iloc[children_idx]['points']
+#                                 if ch != np.nan:
+#                                     children.append(ch)
+#                         cell_points.iloc[cell_idx]['children'] = np.array(children)
+#                     cell_points.iloc[cell_idx]['index'] = idx
+#                     cell_points.iloc[cell_idx]['ratio'] = ratio
+#                     cell_points.iloc[cell_idx]['center'] = center
+#                     cell_points.iloc[cell_idx]['level'] = k
+#                     cell_points.iloc[cell_idx]['num_points'] = min(num_points, self.cell_max_points[k])
+#             multi_cell.append(cell_points)
+
+#         for k in range(self.level):
+#             multi_cell[k] = multi_cell[k].dropna(thresh=2)
+#         return multi_cell
+
+#     def reconstruct_scene(self, cell_points, cell_info):
+#         scene = []
+#         for i in range(len(cell_info)):
+#             cell = cell_points[i]
+#             num_points = cell_info.iloc[i]['num_points']
+#             scaled_cell = cell[:num_points] / cell_info.iloc[i]['ratio']
+#             scaled_cell += cell_info.iloc[i]['center']
+#             scene.append(scaled_cell)
+#         return np.concatenate(scene, axis=0)
+
+#     def all_data(self):
+#         return self.cell_points
+
+
 
     
 def load_pc_octree_data(batch_size, data_in_dir, date, drive, num_points_upper_threshold,
