@@ -9,11 +9,11 @@ import tensorflow as tf
 import os
 import os.path as osp
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
-from model import AutoEncoder
+from model import AutoEncoder, StackAutoEncoder
 import tf_util
 import util
 
@@ -59,7 +59,7 @@ tf.flags.DEFINE_string("decoder", "pointnet",
                        "decoder configuration [pointnet|pointgrid]")
 tf.flags.DEFINE_integer("num_points", 200,
                        "number of points in point cloud")
-tf.flags.DEFINE_integer("batch_size", 256,
+tf.flags.DEFINE_integer("batch_size", 512,
                        "batch size")
 tf.flags.DEFINE_integer("latent_dim", 16,
                        "latent code dimension")
@@ -67,6 +67,8 @@ tf.flags.DEFINE_integer("top_k", 10,
                        "number of sampling points in sampling mode")
 
 # training config
+tf.flags.DEFINE_boolean("stacked", True, 
+                       "if it is multi-scale or not")
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 tf.flags.DEFINE_integer("num_epochs", 500,
                        "number of training epoch")
@@ -79,7 +81,14 @@ tf.flags.DEFINE_float("learning_rate", 0.001,
 
 
 
-drives = ['0001', '0002', '0005', '0011']
+train_drives = ['0001', '0002', '0005', '0011', '0013', '0014', '0015', '0017', '0018', '0019',
+                '0020', '0022', '0023', '0027', '0028', '0029', '0032', '0035', '0036', '0039',
+                '0046', '0048', '0051', '0052', '0056', '0057', '0059', '0060', '0061', '0064',
+                '0070', '0079', '0084', '0052', '0056', '0057', '0059', '0060', '0061', '0064']
+test_drives = ['0101', '0104', '0106', '0113', '0117']
+
+#train_drives = ['0001']
+#test_drives = ['0002']
 # drives = ['0001']
 
 # if FLAGS.partition_mode == 0:
@@ -91,39 +100,75 @@ drives = ['0001', '0002', '0005', '0011']
 # elif FLAGS.partition_mode == 3:
 #      train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.cluster_mode, FLAGS.compression_mode, FLAGS.loss)))
 
+# def train():
+#     util.create_dir(FLAGS.save_path)
+
+#     # step 1 Partition
+#     point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
+
+#     level = len(list(map(int, FLAGS.PL.split(','))))
+#     print ('training grain from corase to fine')
+#     models = []
+#     for l in range(level):
+#         if FLAGS.fb_split == True:
+#             # step 2 compression
+#             model_f = AutoEncoder(FLAGS, l)
+#             model_f.train(point_cell, mode='foreground')
+#             # model_f.predict()
+            
+#             model_d = AutoEncoder(FLAGS, l)
+#             model_d.train(point_cell, mode='background')
+
+#         else:
+#             models.append(AutoEncoder(FLAGS, l))
+#             models[l].train(point_cell)
+
+
 def train():
     util.create_dir(FLAGS.save_path)
 
     # step 1 Partition
-    point_cell = util.LoadData(args=FLAGS, drives=drives)
+    point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
 
     level = len(list(map(int, FLAGS.PL.split(','))))
     print ('training grain from corase to fine')
-    models = []
-    for l in range(level):
+
+    if FLAGS.stacked == True:
+        if FLAGS.fb_split == True:
+            # step 2 compression
+            model_f = StackAutoEncoder(FLAGS)
+            model_f.train(point_cell, mode='foreground')
+            # model_f.predict()
+            
+            model_d = StackAutoEncoder(FLAGS)
+            model_d.train(point_cell, mode='background')
+
+        else:
+            model = StackAutoEncoder(FLAGS)
+            model.train(point_cell)
+
+    else:
+        l = 0
         if FLAGS.fb_split == True:
             # step 2 compression
             model_f = AutoEncoder(FLAGS, l)
             model_f.train(point_cell, mode='foreground')
-
+            # model_f.predict()
+            
             model_d = AutoEncoder(FLAGS, l)
             model_d.train(point_cell, mode='background')
 
         else:
-            models.append(AutoEncoder(FLAGS, l))
-            models[i].train(point_cell)
+            model = AutoEncoder(FLAGS, l)
+            model.train(point_cell)
 
+    point_cell.test_compression_rate()
 
-    # step 3 merge
-    # merge()
-
-    # # step 4 evaluate
-    # evaluation()
 
 def test():
 
-    point_cell = util.LoadData(args=FLAGS, drives=drives)
-    sample_points, sample_info = point_cell.sample_points, point_cell.sample_info
+    point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
+    sample_points = point_cell.sample_points
     train_points, train_info = point_cell.train_points, point_cell.train_info
 
     origin_points_sample = point_cell.test_sweep[point_cell.sample_idx]

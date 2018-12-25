@@ -11,6 +11,8 @@ from itertools import repeat
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+# plt.style.use('ggplot')
+import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
 
 from multiprocessing import Pool
@@ -466,6 +468,32 @@ def rescale(point_cloud, num_points):
     new_point[:num_points] = p_scaled * ratio
     return new_point, ratio, center
 
+def plot_distributions(df, labels, figsize, h, w):
+    i=0
+    fig = plt.figure(figsize=figsize)
+    for l in labels:
+        i+=1
+        fig.add_subplot(h,w,i)
+        plt.tight_layout()
+        plt.title(f'{l}, mean = {df[l].mean():.2f}')
+        lq = df[l].quantile(0.01)
+        uq = df[l].quantile(0.99)
+        feature = df[l].dropna()
+        plt.hist(feature[(feature > lq)&(feature < uq)], density=True, bins=100, alpha=0.7)
+    plt.show()
+
+def corr_plot(df):
+    corr = df.corr()
+
+    mask = np.zeros_like(corr, dtype=np.bool)
+    mask[np.triu_indices_from(mask)] = True
+
+    f, ax = plt.subplots(figsize=(11, 9))
+    cmap = sns.diverging_palette(220, 10, as_cmap=True)
+    sns.heatmap(corr, mask=mask, cmap=cmap, vmax=.3, center=0,
+                square=True, linewidths=.5, cbar_kws={"shrink": .5})
+    plt.show()
+
 class LoadData():
     def __init__(self, args, train_drives, test_drives):
         
@@ -482,8 +510,10 @@ class LoadData():
         self.max_x_dist = 16.0
         self.max_y_dist = 16.0
         self.max_z_dist = 3.0
+        self.latent_dim = args.latent_dim
 
-        self.columns = ['points', 'parent', 'index', 'ratio', 'center', 'level', 'num_points']
+        self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio', 
+                        'center', 'level', 'num_points', 'compressed']
         if self.level > 1:
             self.cell_set = []
             for i in range(self.level):
@@ -572,23 +602,48 @@ class LoadData():
         # sample
         self.sample_idx = randint(0, len(self.test_sweep)-1)
         self.sample_idx_train = randint(0, len(self.train_cleaned_velo)-1)
+        self.sample_sweep = self.test_sweep[self.sample_idx]
 
         if self.fb_split == True:
             f_points, b_points = rough_LBS(self.test_sweep[self.sample_idx])
             self.test_f_sweep, self.test_b_sweep = f_points, b_points
-            self.sample_points_f = self.partition_single(f_points, self.sample_idx)[0]
-            self.sample_points_b = self.partition_single(b_points, self.sample_idx)[0]
+            self.sample_points_f = self.partition_single(f_points, self.sample_idx)
+            self.sample_points_b = self.partition_single(b_points, self.sample_idx)
             # training set, see if overfitting
             f_points_t, b_points_t = rough_LBS(self.train_cleaned_velo[self.sample_idx_train])
             self.train_f_sweep, self.train_b_sweep = f_points_t, b_points_t
-            self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)[0]
-            self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)[0]
+            self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)
+            self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)
             
         else:
-            self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)[0]
+            self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)
             # training set, see if overfitting
-            self.train_points = self.partition_single(self.train_cleaned_velo[self.sample_idx_train], self.sample_idx_train)[0]
+            self.train_points = self.partition_single(self.train_cleaned_velo[self.sample_idx_train], self.sample_idx_train)
 
+
+    def test_compression_rate(self):
+
+        print ('calculating average testing compression rate ...')
+        cell_rate_record, sweep_rate_record = [], []
+        for i, sweep in enumerate(self.test_sweep):
+            sweep_cell = self.partition_single(sweep, i)
+            cell_rate, sweep_rate = self.calculate_compression_rate(sweep_cell[-1]) # only calculate compression on the finest scale
+            cell_rate_record.append(cell_rate)
+            sweep_rate_record.append(sweep_rate)
+        print ('average cell compression rate: {%.6f}' % (np.mean(cell_rate_record)))
+        print ('average sweep compression rate: {%.6f}' % (np.mean(sweep_rate_record)))
+
+    def calculate_compression_rate(self, sample_points):
+        compressed_cell = sample_points[sample_points['compressed']==True]
+        compressed_num = compressed_cell['num_points'].sum() * 3
+        compressed_cell_num = compressed_cell.shape[0]
+        latent_num = self.latent_dim * compressed_cell_num
+
+        original_cell = sample_points[sample_points['compressed']==False]
+        original_num = original_cell['num_points'].sum() * 3
+        total_compressed = latent_num + original_num
+        total_original = compressed_num + original_num
+        return latent_num/compressed_num, total_compressed/total_original
 
     def fb_partition_batch(self, cleaned_velo):
 
@@ -639,10 +694,16 @@ class LoadData():
                     up, down = xyz_min[1]+j*cell_length, xyz_min[1]+(j+1)*cell_length
                     cell_idx = np.where(np.logical_and(np.logical_and(points[:,0]>=left, points[:,0]<right), np.logical_and(points[:,1]>=up, points[:,1]<down)))[0]
                     num_points = len(cell_idx)
+                    cell_pos = i*W+j
 
                     if num_points < self.cell_min_points[k]:
-                        continue
-
+                        cell_points.iloc[cell_pos]['compressed'] = False
+                        continue ## testing, need to removed later
+                    else:
+                        cell_points.iloc[cell_pos]['compressed'] = True
+	
+                    if num_points == 0:
+                    	cell, ratio, center = np.zeros([self.cell_max_points[k], 3]), 1.0, np.zeros(3)
                     if num_points > self.cell_max_points[k]: # if greater than max points, random sample
                         sample_index = np.random.choice(num_points, self.cell_max_points[k], replace=False)
                         cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[k])
@@ -651,21 +712,21 @@ class LoadData():
                         new_point[:num_points] = points[cell_idx]
                         cell, ratio, center = rescale(new_point, num_points)
 
-                    cell_idx = i*W+j
-                    cell_points.iloc[cell_idx]['points'] = cell
-                    if k < self.level-1:
+                    cell_points.iloc[cell_pos]['points'] = cell
+                    if k > 0:
                         I, J = i//self.factor, j//self.factor
-                        parent_idx = int(I*self.W[k-1]+J)
-                        cell_points.iloc[cell_idx]['parent'] = multi_cell[-1].iloc[parent_idx]['points']
-                    cell_points.iloc[cell_idx]['index'] = idx
-                    cell_points.iloc[cell_idx]['ratio'] = ratio
-                    cell_points.iloc[cell_idx]['center'] = center
-                    cell_points.iloc[cell_idx]['level'] = k
-                    cell_points.iloc[cell_idx]['num_points'] = min(num_points, self.cell_max_points[k])
+                        parent_pos = int(I*self.W[k-1]+J)
+                        cell_points.iloc[cell_pos]['parent'] = multi_cell[-1].iloc[parent_pos]['points']
+                        cell_points.iloc[cell_pos]['parent_nump'] = multi_cell[-1].iloc[parent_pos]['num_points']
+                    cell_points.iloc[cell_pos]['index'] = idx
+                    cell_points.iloc[cell_pos]['ratio'] = ratio
+                    cell_points.iloc[cell_pos]['center'] = center
+                    cell_points.iloc[cell_pos]['level'] = k
+                    cell_points.iloc[cell_pos]['num_points'] = min(num_points, self.cell_max_points[k])
             multi_cell.append(cell_points)
 
         for k in range(self.level):
-            multi_cell[k] = multi_cell[k].dropna(thresh=2)
+            multi_cell[k] = multi_cell[k].dropna(thresh=5)
         return multi_cell
 
     def reconstruct_scene(self, cell_points, cell_info):
@@ -680,6 +741,31 @@ class LoadData():
 
     def all_data(self):
         return self.cell_points
+
+    # basic bench mark
+    def random_compress(self, sample_points, num_points=7):
+        mean, var, mse = [], [], []
+        for i in range(len(sample_points)):
+            points, meta = sample_points.iloc[i]['points'], sample_points.iloc[i]['num_points']
+            idx = np.random.choice(meta, num_points, replace=False)
+            m, v, e = sweep_stat(points[:meta][idx], points[:meta])
+            mean.append(m)
+            var.append(v)
+            mse.append(e)
+        print ("random sampled compression, mean: {}. var: {}, mse: {}".format(np.mean(mean), 
+                                                                               np.mean(var), np.mean(mse)))
+
+    def kmeans_compress(self, sample_points, num_points=7, n_threads=16):
+        mean, var, mse = [], [], []
+        for i in range(len(sample_points)):
+            points, meta = sample_points.iloc[i]['points'], sample_points.iloc[i]['num_points']
+            centroids = KMeans(n_clusters=num_points, random_state=0, n_jobs=n_threads).fit(points)
+            m, v, e = sweep_stat(centroids.cluster_centers_, points[:meta])
+            mean.append(m)
+            var.append(v)
+            mse.append(e)
+        print ("random sampled compression, mean: {}. var: {}, mse: {}".format(np.mean(mean), 
+                                                                               np.mean(var), np.mean(mse)))
 
 
 # class LoadData():
@@ -1088,7 +1174,6 @@ def find_component_points(components, nr_objects):
     return component_points
 
 
-
 def dist_stat(recon, orig, meta, cell_max_points=200):
     batch_size = recon.shape[0]
     num_anchor = recon.shape[1]
@@ -1112,7 +1197,7 @@ def dist_stat(recon, orig, meta, cell_max_points=200):
     return np.mean(all_dist), np.var(all_dist), np.mean(all_dist**2)
 
 def sweep_stat(recon, orig):
-    dist = scipy.spatial.distance.cdist(recon, orig) # order must be recon, orig
+    dist = scipy.spatial.distance.cdist(orig, recon) # order must be recon, orig
     dist_vec = np.min(dist, 1)
     return np.mean(dist_vec), np.var(dist_vec), np.mean(dist_vec**2)
 
@@ -1166,80 +1251,3 @@ def create_dir(dir_path):
     return dir_path
 
 
-
-
-        # all_points = np.empty([0, num_points_upper_threshold, self.dataset_velo[0].shape[1]-1], dtype=np.float32)
-        # all_centroids = np.empty([0, self.dataset_velo[0].shape[1]-1], dtype=np.float32)
-        # all_meta = np.empty([0], dtype=np.int32)
-        # all_cell_id = np.empty([0, 2], dtype=np.int32)
-        # all_scale = np.empty([0], dtype=np.float32)
-
-        # print ('------ loading pointnet data ------')
-        # if partition_mode == 4: # very large memory consumption when use multi-process
-        #     for i in range(len(self.dataset_velo)):
-        #         print ("=> start clustering on batch %d" % i)
-        #         cellmap = get_cellmap_from_raw_points(self.dataset_velo[i], n_threads=n_threads, 
-        #                                 split_mode=partition_mode, cluster_mode=cluster_mode, is_training=is_training)
-        #         batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
-        #         batch_points = rescale(batch_points, batch_meta['number_points'], num_points_upper_threshold)
-
-        #         all_cell_id = np.concatenate([all_cell_id, np.stack([i*np.ones_like(batch_meta['cell_id']),
-        #                                       batch_meta['cell_id']]).transpose()], axis=0)
-        #         all_points = np.concatenate([all_points, batch_points], axis=0)
-        #         all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
-        #         all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
-
-        # else:
-        #     pool = Pool(n_threads)
-        #     for i, cellmap in enumerate(pool.imap(partial(get_cellmap_from_raw_points, split_mode=partition_mode), self.dataset_velo)):
-        #         batch_points, batch_meta = get_batch_data_from_cellmap(cellmap, num_points_upper_threshold=num_points_upper_threshold)
-
-        #         all_cell_id = np.concatenate([all_cell_id, np.stack([i*np.ones_like(batch_meta['cell_id']), 
-        #                                       batch_meta['cell_id']]).transpose()], axis=0)
-        #         all_points = np.concatenate([all_points, batch_points], axis=0)
-        #         all_meta = np.concatenate([all_meta, batch_meta['number_points']], axis=0)
-        #         all_scale = np.concatenate([all_meta, np.ones_like(batch_meta['number_points']).astype(np.float32)], axis=0)
-        #         all_centroids = np.concatenate([all_centroids, batch_meta['centroids']], axis=0)
-
-        #     pool.close()
-        #     pool.join()
-
-        # self.all_cell_id = all_cell_id
-        # self.all_points = all_points
-        # self.all_meta = all_meta
-        # self.all_scale = all_scale
-        # self.all_centroids = all_centroids
-
-        # self.point_cell = []
-        # for i in range(all_points.shape[0]):
-        #     self.point_cell.append(PointCell(
-        #                 data_id=self.data_id,
-        #                 cell_id=all_cell_id[i],
-        #                 points=all_points[i],
-        #                 num_points=all_meta[i],
-        #                 scale=all_scale[i],
-        #                 centroids=all_centroids[i],
-        #                 mse=-1.0,
-        #                 var=-1.0,
-        #                 mean=-1.0))
-
-        # self.reset()
-
-    # def next_batch(self):
-    #     start_idx = self.batch_idx * self.batch_size
-    #     end_idx = min((self.batch_idx+1) * self.batch_size, len(self.point_cell))
-    #     batch_data = PointCell(
-    #                 data_id=self.data_id,
-    #                 cell_id=self.all_cell_id[start_idx:end_idx],
-    #                 points=self.all_points[start_idx:end_idx],
-    #                 num_points=self.all_meta[start_idx:end_idx],
-    #                 scale=self.all_scale[start_idx:end_idx],
-    #                 centroids=self.all_centroids[start_idx:end_idx],
-    #                 mse=-1.0,
-    #                 var=-1.0,
-    #                 mean=-1.0)
-    #     if end_idx == len(self.point_cell):
-    #         self.reset()
-    #     else:
-    #         self.batch_idx += 1
-    #     return batch_data

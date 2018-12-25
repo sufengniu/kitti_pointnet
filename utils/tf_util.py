@@ -10,6 +10,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+from transform_nets import *
 # from in_out import snc_category_to_synth_id, create_dir, PointCloudDataSet, load_all_point_clouds_under_folder
 
 
@@ -160,7 +161,7 @@ def conv2d(inputs,
       outputs = tf.nn.bias_add(outputs, biases)
 
       if bn:
-        outputs = batch_norm_for_conv2d(outputs, is_training, scope='bn')
+        outputs = batch_norm_for_conv2d(outputs, is_training, bn_decay=bn_decay, scope='bn')
 
       if activation_fn is not None:
         outputs = activation_fn(outputs)
@@ -235,7 +236,7 @@ def conv2d_transpose(inputs,
       outputs = tf.nn.bias_add(outputs, biases)
 
       if bn:
-        outputs = batch_norm_for_conv2d(outputs, is_training, scope='bn')
+        outputs = batch_norm_for_conv2d(outputs, is_training, bn_decay=bn_decay, scope='bn')
 
       if activation_fn is not None:
         outputs = activation_fn(outputs)
@@ -308,6 +309,7 @@ def fully_connected(inputs,
                     weight_decay=0.0,
                     activation_fn=tf.nn.relu,
                     bn=False,
+                    bn_decay=None,
                     is_training=None):
   """ Fully connected layer with non-linear operation.
   
@@ -332,7 +334,7 @@ def fully_connected(inputs,
     outputs = tf.nn.bias_add(outputs, biases)
      
     if bn:
-      outputs = batch_norm_for_fc(outputs, is_training, 'bn')
+      outputs = batch_norm_for_fc(outputs, is_training, 'bn', bn_decay)
 
     if activation_fn is not None:
       outputs = activation_fn(outputs)
@@ -437,24 +439,7 @@ def avg_pool3d(inputs,
     return outputs
 
 
-def batch_norm_template(inputs, is_training, scope, moments_dims_unused, data_format='NHWC'):
-  """ Batch normalization on convolutional maps and beyond...
-  Ref.: http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow
-  
-  Args:
-      inputs:        Tensor, k-D input ... x C could be BC or BHWC or BDHWC
-      is_training:   boolean tf.Varialbe, true indicates training phase
-      scope:         string, variable scope
-      moments_dims:  a list of ints, indicating dimensions for moments calculation
-      bn_decay:      float or float tensor variable, controling moving average weight
-      data_format:   'NHWC' or 'NCHW'
-  Return:
-      normed:        batch-normalized maps
-  """
-  return tf.layers.batch_normalization(inputs, training=is_training)
-
-
-# def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
+# def batch_norm_template(inputs, is_training, scope, moments_dims_unused, data_format='NHWC'):
 #   """ Batch normalization on convolutional maps and beyond...
 #   Ref.: http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow
   
@@ -464,37 +449,54 @@ def batch_norm_template(inputs, is_training, scope, moments_dims_unused, data_fo
 #       scope:         string, variable scope
 #       moments_dims:  a list of ints, indicating dimensions for moments calculation
 #       bn_decay:      float or float tensor variable, controling moving average weight
+#       data_format:   'NHWC' or 'NCHW'
 #   Return:
 #       normed:        batch-normalized maps
 #   """
-#   with tf.variable_scope(scope) as sc:
-#     num_channels = inputs.get_shape()[-1].value
-#     beta = tf.Variable(tf.constant(0.0, shape=[num_channels]),
-#                        name='beta', trainable=True)
-#     gamma = tf.Variable(tf.constant(1.0, shape=[num_channels]),
-#                         name='gamma', trainable=True)
-#     batch_mean, batch_var = tf.nn.moments(inputs, moments_dims, name='moments')
-#     decay = bn_decay if bn_decay is not None else 0.9
-#     ema = tf.train.ExponentialMovingAverage(decay=decay)
-#     # Operator that maintains moving averages of variables.
-#     ema_apply_op = tf.cond(is_training,
-#                            lambda: ema.apply([batch_mean, batch_var]),
-#                            lambda: tf.no_op())
-    
-#     # Update moving average and return current batch's avg and var.
-#     def mean_var_with_update():
-#       with tf.control_dependencies([ema_apply_op]):
-#         return tf.identity(batch_mean), tf.identity(batch_var)
-    
-#     # ema.average returns the Variable holding the average of var.
-#     mean, var = tf.cond(is_training,
-#                         mean_var_with_update,
-#                         lambda: (ema.average(batch_mean), ema.average(batch_var)))
-#     normed = tf.nn.batch_normalization(inputs, mean, var, beta, gamma, 1e-3)
-#   return normed
+#   return tf.layers.batch_normalization(inputs, training=is_training)
 
 
-def batch_norm_for_fc(inputs, is_training, scope):
+def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
+  """ Batch normalization on convolutional maps and beyond...
+  Ref.: http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow
+  
+  Args:
+      inputs:        Tensor, k-D input ... x C could be BC or BHWC or BDHWC
+      is_training:   boolean tf.Varialbe, true indicates training phase
+      scope:         string, variable scope
+      moments_dims:  a list of ints, indicating dimensions for moments calculation
+      bn_decay:      float or float tensor variable, controling moving average weight
+  Return:
+      normed:        batch-normalized maps
+  """
+  with tf.variable_scope(scope) as sc:
+    num_channels = inputs.get_shape()[-1].value
+    beta = tf.Variable(tf.constant(0.0, shape=[num_channels]),
+                       name='beta', trainable=True)
+    gamma = tf.Variable(tf.constant(1.0, shape=[num_channels]),
+                        name='gamma', trainable=True)
+    batch_mean, batch_var = tf.nn.moments(inputs, moments_dims, name='moments')
+    decay = bn_decay if bn_decay is not None else 0.9
+    ema = tf.train.ExponentialMovingAverage(decay=decay)
+    # Operator that maintains moving averages of variables.
+    ema_apply_op = tf.cond(is_training,
+                           lambda: ema.apply([batch_mean, batch_var]),
+                           lambda: tf.no_op())
+    
+    # Update moving average and return current batch's avg and var.
+    def mean_var_with_update():
+      with tf.control_dependencies([ema_apply_op]):
+        return tf.identity(batch_mean), tf.identity(batch_var)
+    
+    # ema.average returns the Variable holding the average of var.
+    mean, var = tf.cond(is_training,
+                        mean_var_with_update,
+                        lambda: (ema.average(batch_mean), ema.average(batch_var)))
+    normed = tf.nn.batch_normalization(inputs, mean, var, beta, gamma, 1e-3)
+  return normed
+
+
+def batch_norm_for_fc(inputs, is_training, scope, bn_decay):
   """ Batch normalization on FC data.
   
   Args:
@@ -505,7 +507,7 @@ def batch_norm_for_fc(inputs, is_training, scope):
   Return:
       normed:      batch-normalized maps
   """
-  return batch_norm_template(inputs, is_training, scope, [0,])
+  return batch_norm_template(inputs, is_training, scope, [0,], bn_decay)
 
 
 def batch_norm_for_conv1d(inputs, is_training, bn_decay, scope):
@@ -519,12 +521,12 @@ def batch_norm_for_conv1d(inputs, is_training, bn_decay, scope):
   Return:
       normed:      batch-normalized maps
   """
-  return batch_norm_template(inputs, is_training, scope, [0,1])
+  return batch_norm_template(inputs, is_training, scope, [0,1], bn_decay)
 
 
 
   
-def batch_norm_for_conv2d(inputs, is_training, scope):
+def batch_norm_for_conv2d(inputs, is_training, bn_decay, scope):
   """ Batch normalization on 2D convolutional maps.
   
   Args:
@@ -535,7 +537,7 @@ def batch_norm_for_conv2d(inputs, is_training, scope):
   Return:
       normed:      batch-normalized maps
   """
-  return batch_norm_template(inputs, is_training, scope, [0,1,2])
+  return batch_norm_template(inputs, is_training, scope, [0,1,2], bn_decay)
 
 
 
@@ -550,7 +552,7 @@ def batch_norm_for_conv3d(inputs, is_training, bn_decay, scope):
   Return:
       normed:      batch-normalized maps
   """
-  return batch_norm_template(inputs, is_training, scope, [0,1,2,3])
+  return batch_norm_template(inputs, is_training, scope, [0,1,2,3], bn_decay)
 
 
 def dropout(inputs,
@@ -592,7 +594,7 @@ def pairwise_distance(point_cloud):
   point_cloud_transpose = tf.transpose(point_cloud, perm=[0, 2, 1])
   point_cloud_inner = tf.matmul(point_cloud, point_cloud_transpose)
   point_cloud_inner = -2*point_cloud_inner
-  point_cloud_square = tf.reduce_sum(tf.square(point_cloud), axis=-1, keep_dims=True)
+  point_cloud_square = tf.reduce_sum(tf.square(point_cloud), axis=-1, keepdims=True)
   point_cloud_square_tranpose = tf.transpose(point_cloud_square, perm=[0, 2, 1])
   return point_cloud_square + point_cloud_inner + point_cloud_square_tranpose
 
@@ -609,6 +611,55 @@ def knn(adj_matrix, k=20):
   neg_adj = -adj_matrix
   _, nn_idx = tf.nn.top_k(neg_adj, k=k)
   return nn_idx
+
+
+def prelu(x, name='prelu', ref=False):
+    in_shape = x.get_shape().as_list()
+    with tf.variable_scope(name):
+        # make one alpha per feature
+        alpha = tf.get_variable('alpha', in_shape[-1],
+                                initializer=tf.constant_initializer(0.),
+                                dtype=tf.float32)
+        pos = tf.nn.relu(x)
+        neg = alpha * (x - tf.abs(x)) * .5
+        if ref:
+            # return ref to alpha vector
+            return pos + neg, alpha
+        else:
+            return pos + neg
+
+def get_node_feature(point_cloud, nn_idx, k=20):
+  """Construct edge feature for each point
+  Args:
+    point_cloud: (batch_size, num_points, 1, num_dims)
+    nn_idx: (batch_size, num_points, k)
+    k: int
+
+  Returns:
+    edge features: (batch_size, num_points, k, num_dims)
+  """
+  # og_batch_size = point_cloud.get_shape().as_list()[0]
+  # point_cloud = tf.squeeze(point_cloud)
+  # if og_batch_size == 1:
+  #   point_cloud = tf.expand_dims(point_cloud, 0)
+
+  point_cloud_central = point_cloud
+
+  point_cloud_shape = point_cloud.get_shape()
+  batch_size = tf.shape(point_cloud)[0]
+  num_points = point_cloud_shape[1].value
+  num_dims = point_cloud_shape[2].value
+
+  idx_ = tf.range(batch_size) * num_points
+  idx_ = tf.reshape(idx_, [batch_size, 1, 1]) 
+
+  point_cloud_flat = tf.reshape(point_cloud, [-1, num_dims])
+  point_cloud_neighbors = tf.gather(point_cloud_flat, nn_idx+idx_)
+  
+  node_feature = point_cloud_neighbors
+  node_feature = tf.reshape(node_feature, [-1, num_points, k, num_dims])
+
+  return node_feature
 
 
 def get_edge_feature(point_cloud, nn_idx, k=20):
@@ -664,7 +715,7 @@ def fully_connected_decoder(net, num_points, is_training):
 
    # batch_size = tf.shape(net)[0]
 
-   num_code = net.get_shape()[1]
+   num_code = net.get_shape()[-1]
    net = tf.reshape(net, [-1, num_code])
 
    net = fully_connected(net, 256, scope='fc1', bn=True,
@@ -681,35 +732,88 @@ def fully_connected_decoder(net, num_points, is_training):
 
    return net
 
-def point_conv(input_image, is_training, n_filters=[10], activation_function=tf.nn.relu, name=None):
-   
-   net = tf.expand_dims(input_image, -2)
-   for idx, n_filter in enumerate(n_filters):
-     net = conv2d(net, n_filter, [1,1],
-                  padding='VALID', stride=[1,1],
-                  activation_fn=activation_function,
-                  bn=True, is_training=is_training,
-                  scope=name+'_'+str(idx))
-   net = tf.squeeze(net, -2)
+def point_conv(input_image, is_training, n_filters=[10], activation_function=tf.nn.relu, transform=False, name=None):
+    
+    if transform == True:
+      with tf.variable_scope('transform_net1') as sc:
+        transform = input_transform_net(input_image, is_training, bn_decay, K=3)
+      point_cloud = tf.matmul(input_image, transform)
+    else:
+      point_cloud = input_image
 
-   return net
+    net = tf.expand_dims(point_cloud, -2)
+    for idx, n_filter in enumerate(n_filters):
+      net = conv2d(net, n_filter, [1,1],
+                   padding='VALID', stride=[1,1],
+                   activation_fn=activation_function,
+                   bn=True, is_training=is_training,
+                   scope=name+'_'+str(idx))
+    net = tf.squeeze(net, -2)
 
+    return net
+
+def point_iteration(input, state, lstm):
+    with tf.variable_scope('magic_rnn', reuse=tf.AUTO_REUSE):
+        transposed_in = tf.transpose(input, [1,0,2])
+        transposed_out, new_state = tf.map_fn(lambda x: lstm(x[0], x[1]), (transposed_in, state), dtype=(tf.float32, tf.float32))
+        return tf.transpose(transposed_out, [1,0,2]), new_state
+
+def magic_conv(input_image, is_training, n_filter, k, bn_decay=None, iterative=False, step=3, name=None):
+    batch_size = tf.shape(input_image)[0]
+    num_points = tf.shape(input_image)[1]
+
+    x = magic_block(input_image, is_training, n_filter, k, bn_decay=bn_decay, name_scope=name+'_input')
+    if iterative == True:
+        lstm_in = x
+        lstm = tf.nn.rnn_cell.LSTMCell(n_filter, state_is_tuple=False, name=name+'_lstm')
+        # state = lstm.zero_state(batch_size, tf.float32)
+        state = tf.tile(tf.expand_dims(lstm.zero_state(batch_size, tf.float32), 0), [1024, 1, 1])
+
+        for t in range(step):
+            x_t = magic_block(lstm_in, is_training, n_filter, k, bn_decay=bn_decay, name_scope=name+'_iter')
+            # TODO: testing if we need to concat input_image every iteration
+            # out, state = point_iteration(tf.concat([x_t, input_image], axis=-1), state, lstm)
+            out, state = point_iteration(x_t, state, lstm)
+            lstm_in = out
+    else:
+        out = x
+    return out
+
+def magic_block(point_cloud, is_training, n_filter, k, bn_decay=None, name_scope=None):
+    with tf.variable_scope(name_scope, reuse=tf.AUTO_REUSE):
+        adj_matrix = pairwise_distance(point_cloud)
+        nn_idx = knn(adj_matrix, k=k)
+
+        edge_feature = get_edge_feature(point_cloud, nn_idx=nn_idx, k=k)
+        node_feature = get_node_feature(point_cloud, nn_idx=nn_idx, k=k)
+        node_feature = tf.layers.dense(inputs=node_feature, units=n_filter, activation=None, 
+                                       kernel_initializer=tf.contrib.layers.xavier_initializer())
+
+        edge_net = conv2d(edge_feature, 1, [1,1],
+                          padding='VALID', stride=[1,1],
+                          activation_fn=None,
+                          bn=True, bn_decay=bn_decay, 
+                          is_training=is_training,
+                          scope=name_scope+'_'+'edge')
+        alpha = tf.nn.softmax(prelu(edge_net, name='prelu_edge_att'), axis=-2)
+
+    return tf.reduce_mean(alpha * node_feature, axis=-2)
 
 def generate_bar(num_points):
-   A = 0.5
-   B = np.pi*np.random.uniform(0, 1)
-   x = np.random.uniform(0, 1, [num_points])
-   y = -B * np.square(x-A) + B * np.square(A)
-   z = np.zeros_like(x)
-   points = np.stack([x, y, z], axis=-1)
-   return points
+    A = 0.5
+    B = np.pi*np.random.uniform(0, 1)
+    x = np.random.uniform(0, 1, [num_points])
+    y = -B * np.square(x-A) + B * np.square(A)
+    z = np.zeros_like(x)
+    points = np.stack([x, y, z], axis=-1)
+    return points
 
 def rotation(points, theta):
-   x = np.cos(theta)*points[:,0] - np.sin(theta)*points[:,1]
-   y = np.sin(theta)*points[:,0] + np.cos(theta)*points[:,1]
-   z = points[:,2]
-   rotated_points = np.stack([x,y,z],axis=-1)
-   return rotated_points
+    x = np.cos(theta)*points[:,0] - np.sin(theta)*points[:,1]
+    y = np.sin(theta)*points[:,0] + np.cos(theta)*points[:,1]
+    z = points[:,2]
+    rotated_points = np.stack([x,y,z],axis=-1)
+    return rotated_points
 
 def generate_multiple_bars(num_points, bar_num=4):
 
