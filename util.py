@@ -6,7 +6,8 @@ import os.path as osp
 import pandas as pd
 from tqdm import *
 from functools import partial
-from itertools import repeat
+from itertools import repeat, product
+import h5py
 
 import matplotlib
 matplotlib.use('Agg')
@@ -15,6 +16,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
 
+import pickle
 from multiprocessing import Pool
 import collections
 import random
@@ -30,6 +32,9 @@ from sklearn import linear_model, datasets
 from sklearn.cluster import KMeans
 from sklearn.cluster import SpectralClustering
 from sklearn import mixture
+
+from external.structural_losses.tf_nndistance import nn_distance
+from external.structural_losses.tf_approxmatch import approx_match, match_cost
 
 from source import parseTrackletXML as xmlParser
 import pykitti
@@ -50,9 +55,15 @@ colors = {
     'Sitter': 'k'
 }
 # visualization limits
+# axes_limits = [
+#     [-20, 80], # X axis range
+#     [-20, 20], # Y axis range
+#     [-3, 10]   # Z axis range
+# ]
+# hdmap visualization limits
 axes_limits = [
-    [-20, 80], # X axis range
-    [-20, 20], # Y axis range
+    [-32, 30], # X axis range
+    [-100, 100], # Y axis range
     [-3, 10]   # Z axis range
 ]
 axes_str = ['X', 'Y', 'Z']
@@ -457,6 +468,9 @@ def shuffle_data(cell_id, point_clouds, meta, scale, centroids, seed=12345):
     return cell_id[perm], point_clouds[perm], meta[perm], scale[perm], centroids[perm]
 
 def rescale(point_cloud, num_points):
+    if num_points == 1:
+        return np.zeros_like(point_cloud), 1.0, point_cloud[0]
+
     p_scaled = point_cloud[:num_points, :]
     new_point = np.zeros_like(point_cloud)
     center = np.mean(p_scaled, 0)
@@ -511,9 +525,26 @@ class LoadData():
         self.max_y_dist = 16.0
         self.max_z_dist = 3.0
         self.latent_dim = args.latent_dim
+        self.range_view = args.range_view
+        self.num_sample_points = 5000
 
-        self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio', 
-                        'center', 'level', 'num_points', 'compressed']
+        self.num_hdmap_test = 1
+        self.lower_min_elevate_angle = -24.33
+        self.upper_min_elevate_angle = -8.33
+        self.min_azimuth_angle = -180.0
+        self.range_of_azimuth_angle = 360.0
+        self.num_lasers = 64
+        self.group_num_lasers = 8 # can tune
+        self.image_height = int(self.num_lasers / self.group_num_lasers)
+        self.image_width = 64 # can tune
+        self.dataset = args.dataset
+        
+        if self.range_view == True:
+            self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio',
+                            'center', 'level', 'num_points', 'compressed', 'row', 'col']
+        else:
+            self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio', 
+                            'center', 'level', 'num_points', 'compressed']
         if self.level > 1:
             self.cell_set = []
             for i in range(self.level):
@@ -525,81 +556,24 @@ class LoadData():
         self.data_id = []
         self.train_dataset_gray, self.train_dataset_rgb, self.train_dataset_velo = [], [], []
         self.test_dataset_gray, self.test_dataset_rgb, self.test_dataset_velo = [], [], []
-        num_to_select = 10
-        for drive in train_drives:
-            dataset = load_dataset(args.date, drive, self.basedir)
-            self.data_id += [args.date + '_' + drive]
-            data_len = len(list(dataset.velo))
-            Idx = random.sample(range(data_len), num_to_select)
-            # for visualization
-            # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
-            # frame = 10 # for visualization
-            # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
-            self.train_dataset_gray += [list(dataset.gray)[i] for i in Idx]
-            self.train_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
-            self.train_dataset_velo += [list(dataset.velo)[i] for i in Idx]
         
-        self.train_cleaned_velo = []
-        for points in self.train_dataset_velo:
-            idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
-            idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
-            idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
-            idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
-            filter_data = np.delete(points, idx, axis=0)[:,:3]
-            # testing
-            # index = random.sample(range(0, len(filter_data)-1), 20000)
-            # self.cleaned_velo.append(filter_data[index])
-            self.train_cleaned_velo.append(filter_data) # ignore the 4th dimension
-
-        for drive in test_drives:
-            dataset = load_dataset(args.date, drive, self.basedir)
-            self.data_id += [args.date + '_' + drive]
-            data_len = len(list(dataset.velo))
-            Idx = random.sample(range(data_len), num_to_select)
-            self.test_dataset_gray += [list(dataset.gray)[i] for i in Idx]
-            self.test_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
-            self.test_dataset_velo += [list(dataset.velo)[i] for i in Idx]
-
-        self.test_cleaned_velo = []
-        for points in self.test_dataset_velo:
-            idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
-            idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
-            idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
-            idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
-            filter_data = np.delete(points, idx, axis=0)[:,:3]
-            self.test_cleaned_velo.append(filter_data) # ignore the 4th dimension
+        self.num_to_select = 12
+        if self.dataset == 'kitti':
+            self.load_kitti(args, train_drives, test_drives)
+        elif self.dataset == 'hdmap':
+            self.load_hdmap(args)
+        else:
+            print ("Error: No such dataset")
+            raise
 
         self.test_sweep = self.test_cleaned_velo
-        valid_split = int(len(self.train_cleaned_velo)*0.9)
-        if self.fb_split == True:
-            print ('partitioning training set...')
-            self.train_cell_f, self.train_cell_b = self.fb_partition_batch(self.train_cleaned_velo[:valid_split])
-            print ('partitioning validation set...')
-            self.valid_cell_f, self.valid_cell_b = self.fb_partition_batch(self.train_cleaned_velo[valid_split:])
-            print ('partitioning testing set...')
-            self.test_cell_f, self.test_cell_b = self.fb_partition_batch(self.test_cleaned_velo)
-            
-            print ("total foreground training set: {}, validation set: {}, testing set: {}".format(self.train_cell_f[0].shape[0], 
-                                                                                                   self.valid_cell_f[0].shape[0],
-                                                                                                   self.test_cell_f[0].shape[0]))  
-            print ("total background training set: {}, validation set: {}, testing set: {}".format(self.train_cell_b[0].shape[0], 
-                                                                                                   self.valid_cell_b[0].shape[0],
-                                                                                                   self.test_cell_b[0].shape[0]))
 
-        else:
-            print ('partitioning training set...')
-            self.train_cell = self.partition_batch(self.train_cleaned_velo[:valid_split])
-            print ('partitioning validation set...')
-            self.valid_cell = self.partition_batch(self.train_cleaned_velo[valid_split:])
-            print ('partitioning testing set...')
-            self.test_cell = self.partition_batch(self.test_cleaned_velo)
-
-            print ("total training set: {}, validation set: {}, testing set: {}".format(self.train_cell[0].shape[0], 
-                                                                                        self.valid_cell[0].shape[0],
-                                                                                        self.test_cell[0].shape[0]))
-        print ("batch size: {}".format(self.batch_size))
+        print ('partitioning testing set...')
+        self.test_cell = self.partition_batch(self.test_cleaned_velo, permutation=False)
+        print ("total testing set: {}".format(self.test_cell[0].shape[0]))
 
         # sample
+        random.seed(10)
         self.sample_idx = randint(0, len(self.test_sweep)-1)
         self.sample_idx_train = randint(0, len(self.train_cleaned_velo)-1)
         self.sample_sweep = self.test_sweep[self.sample_idx]
@@ -610,40 +584,172 @@ class LoadData():
             self.sample_points_f = self.partition_single(f_points, self.sample_idx)
             self.sample_points_b = self.partition_single(b_points, self.sample_idx)
             # training set, see if overfitting
-            f_points_t, b_points_t = rough_LBS(self.train_cleaned_velo[self.sample_idx_train])
-            self.train_f_sweep, self.train_b_sweep = f_points_t, b_points_t
-            self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)
-            self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)
+            # f_points_t, b_points_t = rough_LBS(self.train_cleaned_velo[self.sample_idx_train])
+            # self.train_f_sweep, self.train_b_sweep = f_points_t, b_points_t
+            # self.train_points_f = self.partition_single(f_points_t, self.sample_idx_train)
+            # self.train_points_b = self.partition_single(b_points_t, self.sample_idx_train)
             
         else:
-            self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)
+            if self.range_view == True:
+                self.sample_points = self.partition_single_range(self.test_sweep[self.sample_idx], self.sample_idx)
+            else:
+                self.sample_points = self.partition_single(self.test_sweep[self.sample_idx], self.sample_idx)
             # training set, see if overfitting
-            self.train_points = self.partition_single(self.train_cleaned_velo[self.sample_idx_train], self.sample_idx_train)
+            # self.train_points = self.partition_single(self.train_cleaned_velo[self.sample_idx_train], self.sample_idx_train)
 
+    def load_kitti(self, args, train_drives, test_drives):
+        print ('loading data ...')
+        if osp.isfile(osp.join(args.data_in_dir, 'training.h5')):
+            self.train_cleaned_velo = []
+            with h5py.File(self.basedir+'training.h5', 'r') as f:
+                for k in f.keys():
+                    self.train_cleaned_velo.append(f[k].value)
+        else:
+            for drive in train_drives:
+                dataset = load_dataset(args.date, drive, self.basedir)
+                self.data_id += [args.date + '_' + drive]
+                data_len = len(list(dataset.velo))
+                Idx = random.sample(range(data_len), self.num_to_select)
+                # for visualization
+                # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
+                # frame = 10 # for visualization
+                # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
+                self.train_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+                self.train_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+                self.train_dataset_velo += [list(dataset.velo)[i] for i in Idx]
+                # self.train_dataset_velo += list(dataset.velo)
+            
+            self.train_cleaned_velo = []
+            for points in self.train_dataset_velo:
+                idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
+                idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
+                idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
+                idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
+                filter_data = np.delete(points, idx, axis=0)[:,:3]
+                # testing
+                # index = random.sample(range(0, len(filter_data)-1), 20000)
+                # self.cleaned_velo.append(filter_data[index])
+                self.train_cleaned_velo.append(filter_data) # ignore the 4th dimension
 
-    def test_compression_rate(self):
+            with h5py.File(self.basedir+'training.h5', 'w', libver='latest') as f:
+                for idx, arr in enumerate(self.train_cleaned_velo):
+                    dset = f.create_dataset(str(idx), data=arr)
 
-        print ('calculating average testing compression rate ...')
-        cell_rate_record, sweep_rate_record = [], []
-        for i, sweep in enumerate(self.test_sweep):
-            sweep_cell = self.partition_single(sweep, i)
-            cell_rate, sweep_rate = self.calculate_compression_rate(sweep_cell[-1]) # only calculate compression on the finest scale
-            cell_rate_record.append(cell_rate)
-            sweep_rate_record.append(sweep_rate)
-        print ('average cell compression rate: {%.6f}' % (np.mean(cell_rate_record)))
-        print ('average sweep compression rate: {%.6f}' % (np.mean(sweep_rate_record)))
+        if osp.isfile(osp.join(args.data_in_dir, 'testing.h5')):
+            self.test_cleaned_velo = []
+            with h5py.File(self.basedir+'testing.h5', 'r') as f:
+                for k in f.keys():
+                    self.test_cleaned_velo.append(f[k].value)
+        else:
+            random.seed(0)
+            for drive in test_drives:
+                dataset = load_dataset(args.date, drive, self.basedir)
+                self.data_id += [args.date + '_' + drive]
+                data_len = len(list(dataset.velo))
+                Idx = random.sample(range(data_len), self.num_to_select)
+                self.test_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+                self.test_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+                self.test_dataset_velo += [list(dataset.velo)[i] for i in Idx]
 
-    def calculate_compression_rate(self, sample_points):
-        compressed_cell = sample_points[sample_points['compressed']==True]
-        compressed_num = compressed_cell['num_points'].sum() * 3
-        compressed_cell_num = compressed_cell.shape[0]
-        latent_num = self.latent_dim * compressed_cell_num
+            self.test_cleaned_velo = []
+            for points in self.test_dataset_velo:
+                idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis
+                idx_x = np.squeeze(np.argwhere(abs(points[:,0]) > self.max_x_dist)) # remove all points above 32m
+                idx_y = np.squeeze(np.argwhere(abs(points[:,1]) > self.max_y_dist)) # remove all points above 32m
+                idx = np.union1d(np.union1d(idx_x, idx_y), idx_z)
+                filter_data = np.delete(points, idx, axis=0)[:,:3]
+                self.test_cleaned_velo.append(filter_data) # ignore the 4th dimension
 
-        original_cell = sample_points[sample_points['compressed']==False]
-        original_num = original_cell['num_points'].sum() * 3
-        total_compressed = latent_num + original_num
-        total_original = compressed_num + original_num
-        return latent_num/compressed_num, total_compressed/total_original
+            with h5py.File(self.basedir+'testing.h5', 'w', libver='latest') as f:
+                for idx, arr in enumerate(self.test_cleaned_velo):
+                    dset = f.create_dataset(str(idx), data=arr)
+
+    def filter_hdmap(self):
+
+        pc = None
+        for cell in cells:
+            if pc is None:
+                pc = point_cloud_dict[cell]
+            else:
+                pc = np.concatenate([pc, point_cloud_dict[cell]], axis=0)
+
+    def _get_mean(self, sweep):
+        num = sweep.shape[0]
+        center_x, center_y = 0, 0
+        for i in range(num):
+            center_x += sweep[i, 0]
+            center_y += sweep[i, 1]
+        center_x /= num
+        center_y /= num
+        return np.array([center_x, center_y, 0.0])
+
+    def load_hdmap(self, args):
+        f_list = []
+        extensions = {'.pickle'}
+        for subdir, dirs, files in os.walk(args.hdmap_dir):
+            for file in files:
+                ext = os.path.splitext(file)[-1].lower()
+                if ext in extensions:
+                    filename = os.path.join(subdir, file)
+                    f_list.append(filename)
+
+        train_f_list, test_f_list = f_list[:-self.num_hdmap_test], f_list[-self.num_hdmap_test:]
+        self.train_cleaned_velo = []
+        self.test_cleaned_velo = []
+
+        for idx, file in enumerate(train_f_list):
+            sweep = pickle.load(open(file, "rb"))
+            for cell_pos, k in enumerate(sweep.keys()):
+                center = self._get_mean(sweep[k])
+                centered_sweep = sweep[k] - center
+                self.train_cleaned_velo.append(centered_sweep)
+
+        select_cells = [(10, 7), (10, 8), (10, 9), (10, 10), (10, 11), (10, 12), (10, 13), (10, 14), (10, 15), (10, 16), (10, 17), (10, 18), (10, 19), (11, 7), (11, 8), (11, 9), (11, 10), (11, 11), (11, 12), (11, 13), (11, 14), (11, 15), (11, 16), (11, 17), (11, 18), (12, 7), (12, 8), (12, 9), (12, 10), (12, 11), (12, 12), (12, 13), (12, 14), (12, 15), (12, 16), (12, 17), (12, 18), (13, 7), (13, 8), (13, 10), (13, 11), (13, 12), (13, 13), (13, 14), (13, 15), (13, 16), (13, 17), (13, 18)]
+        for idx, file in enumerate(test_f_list):
+            sweep = pickle.load(open(file, "rb"))
+            for cell_pos, k in enumerate(sweep.keys()):
+                if k in select_cells:
+                    self.test_cleaned_velo.append(sweep[k])
+
+        dps = np.concatenate(self.test_cleaned_velo, 0)
+        
+        d_num = 200000
+        idx = np.random.choice(dps.shape[0], d_num, replace=False)
+        dps = dps[idx]
+        center = self._get_mean(dps)
+        dps -= center
+
+        # random.seed(10)
+        # self.sample_idx = randint(0, len(test_f_list)-1)
+        # self.sample_sweep = []
+        # self.sample_points = self.partition_hdmap([test_f_list[self.sample_idx]], self.sample_sweep, permutation=False)
+
+    def partition(self, train_cleaned_velo):
+        valid_split = int(len(train_cleaned_velo)*0.9)
+        train_velo = train_cleaned_velo
+        if self.fb_split == True:
+            print ('partitioning training set...')
+            train_cell_f, train_cell_b = self.fb_partition_batch(train_velo[:valid_split])
+            print ('partitioning validation set...')
+            valid_cell_f, valid_cell_b = self.fb_partition_batch(train_velo[valid_split:])
+            
+            print ("total foreground training set: {}, validation set: {}, testing set: {}".format(train_cell_f[0].shape[0], 
+                                                                                                   valid_cell_f[0].shape[0],
+                                                                                                   self.test_cell_f[0].shape[0]))  
+            print ("total background training set: {}, validation set: {}, testing set: {}".format(train_cell_b[0].shape[0], 
+                                                                                                   valid_cell_b[0].shape[0],
+                                                                                                   self.test_cell_b[0].shape[0]))
+        else:
+            print ('partitioning training set...')
+            train_cell = self.partition_batch(train_velo[:valid_split])
+            print ('partitioning validation set...')
+            valid_cell = self.partition_batch(train_velo[valid_split:])
+            
+            print ("total training set: {}, validation set: {}, testing set: {}".format(train_cell[0].shape[0], 
+                                                                                        valid_cell[0].shape[0],
+                                                                                        self.test_cell[0].shape[0]))
+        print ("batch size: {}".format(self.batch_size))
+        return train_cell, valid_cell
 
     def fb_partition_batch(self, cleaned_velo):
 
@@ -659,12 +765,18 @@ class LoadData():
 
         return data_cell_f, data_cell_b
 
-    def partition_batch(self, cleaned_velo):
+    def partition_batch(self, cleaned_velo, permutation=True):
         cell_points = [[] for _ in range(self.level)]
-        for idx, points in enumerate(tqdm(cleaned_velo)):
-            for l in range(self.level):
+        if self.range_view == True:
+            for idx, points in enumerate(tqdm(cleaned_velo)):
+                cell_points_buf = self.partition_single_range(points, idx)
+                for l in range(self.level):
+                    cell_points[l].append(cell_points_buf[l])
+        else:
+            for idx, points in enumerate(tqdm(cleaned_velo)):
                 cell_points_buf = self.partition_single(points, idx)
-                cell_points[l].append(cell_points_buf[l])
+                for l in range(self.level):
+                    cell_points[l].append(cell_points_buf[l])
 
         data_cell = []
         for l in range(self.level):
@@ -672,14 +784,17 @@ class LoadData():
             self.cell_set[l] = cell_points[l]
 
             data_buf = cell_points[l]
-            data_buf = data_buf.iloc[np.random.permutation(np.arange(len(data_buf)))]
+            if permutation == True:
+                data_buf = data_buf.iloc[np.random.permutation(np.arange(len(data_buf)))]
             data_cell.append(data_buf)
 
         return data_cell
-        
+
     def partition_single(self, points, idx):
-        xyz_max = np.max(points, 0)
-        xyz_min = np.min(points, 0)
+        # xyz_max = np.max(points, 0)
+        # xyz_min = np.min(points, 0)
+        xyz_max = np.array([self.max_x_dist, self.max_y_dist, self.max_z_dist])
+        xyz_min = np.array([-self.max_x_dist, -self.max_y_dist, -self.max_z_dist])
         
         multi_cell = []
         # partition into a LxW grid
@@ -698,13 +813,13 @@ class LoadData():
 
                     if num_points < self.cell_min_points[k]:
                         cell_points.iloc[cell_pos]['compressed'] = False
-                        continue ## testing, need to removed later
+                        # continue ## testing, need to removed later
                     else:
                         cell_points.iloc[cell_pos]['compressed'] = True
-	
+
                     if num_points == 0:
-                    	cell, ratio, center = np.zeros([self.cell_max_points[k], 3]), 1.0, np.zeros(3)
-                    if num_points > self.cell_max_points[k]: # if greater than max points, random sample
+                        cell, ratio, center = np.zeros([self.cell_max_points[k], 3]), 1.0, np.zeros(3)
+                    elif num_points > self.cell_max_points[k]: # if greater than max points, random sample
                         sample_index = np.random.choice(num_points, self.cell_max_points[k], replace=False)
                         cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[k])
                     elif num_points <= self.cell_max_points[k]:
@@ -729,6 +844,124 @@ class LoadData():
             multi_cell[k] = multi_cell[k].dropna(thresh=5)
         return multi_cell
 
+    def compute_range_view_image_pixel_id(self, point_cloud):
+        '''
+        input: point_cloud:  N * 3 point cloud matrix
+        
+        output: row_id:    N * 1 row id
+                column_id: N * 1 column id
+        '''
+        x_coords = point_cloud[:, 0]
+        y_coords = point_cloud[:, 1]
+        z_coords = point_cloud[:, 2]
+        range_xy = np.sqrt(np.square(x_coords)+np.square(y_coords))
+        elevate_angle = np.arctan2(z_coords, range_xy) * 180.0 /np.pi
+        azimuth_angle = np.arctan2(y_coords, x_coords) * 180.0 /np.pi
+
+        # compute row id
+        lower_row_id = np.floor((elevate_angle - self.lower_min_elevate_angle)*2)
+        upper_row_id = np.floor((elevate_angle - self.upper_min_elevate_angle)*3) + 32
+        row_id = np.where(elevate_angle < self.upper_min_elevate_angle, lower_row_id, upper_row_id)
+        row_id[row_id < 0] = 0
+        row_id[row_id >= self.num_lasers] = self.num_lasers - 1
+        row_id = row_id / self.group_num_lasers
+
+        # compute row id
+        inverse_range_of_azimuth_angle = 1.0 / self.range_of_azimuth_angle
+        column_id = np.floor((azimuth_angle - self.min_azimuth_angle) * self.image_width * inverse_range_of_azimuth_angle)
+        column_id[column_id==self.image_width] = 0
+
+        return row_id.astype(int), column_id.astype(int)
+
+    def partition_single_range(self, points, idx):
+        '''
+        input: point_cloud:  N * 3 point cloud matrix
+        
+        output: range_view_cell_points:    IMAGE_HEIGHT, IMAGE_WIDTH, MAX_POINTS_IN_A_CELL, 4 (x,y,z,intensity)
+                range_view_cell_point_num: IMAGE_HEIGHT * IMAGE_WIDTH
+        '''
+        r, c = self.compute_range_view_image_pixel_id(points)
+
+        # # Create a dictionary of cell information
+        # cell_info = dict()
+        # for i in range(len(points)):
+        #     key = (r[i], c[i])
+        #     if key in cell_info:
+        #         cell_info[key].append(points[i])
+        #     else:
+        #         cell_info[key] = [points[i]]
+
+        multi_cell = []
+        for k in range(self.level):
+            index = np.arange(self.image_height*self.image_width)
+            cell_points = pd.DataFrame(index=index, columns=self.columns)
+            for i in range(self.image_height):
+                for j in range(self.image_width):
+                    cell_idx = np.intersect1d(np.where(r == i)[0], np.where(c == j)[0])
+                    num_points = cell_idx.shape[0]
+                    cell_pos = i*self.image_width + j
+
+                    if num_points < self.cell_min_points[0]:
+                        cell_points.iloc[cell_pos]['compressed'] = False
+                    else:
+                        cell_points.iloc[cell_pos]['compressed'] = True
+
+                    if num_points == 0:
+                        cell, ratio, center = np.zeros([self.cell_max_points[0], 3]), 1.0, np.zeros(3)
+                    elif num_points > self.cell_max_points[0]: # if greater than max points, random sample
+                        sample_index = np.random.choice(num_points, self.cell_max_points[0], replace=False)
+                        cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[0])
+                    elif num_points <= self.cell_max_points[0]:
+                        new_point = np.zeros([self.cell_max_points[0], 3])
+                        new_point[:num_points] = points[cell_idx]
+                        cell, ratio, center = rescale(new_point, num_points)
+
+                    if k > 0:
+                        I, J = i//self.factor, j//self.factor
+                        parent_pos = int(I*self.W[k-1]+J)
+                        cell_points.iloc[cell_pos]['parent'] = multi_cell[-1].iloc[parent_pos]['points']
+                        cell_points.iloc[cell_pos]['parent_nump'] = multi_cell[-1].iloc[parent_pos]['num_points']
+                    cell_points.iloc[cell_pos]['points'] = cell
+                    cell_points.iloc[cell_pos]['row'] = i
+                    cell_points.iloc[cell_pos]['col'] = j
+                    cell_points.iloc[cell_pos]['index'] = idx
+                    cell_points.iloc[cell_pos]['ratio'] = ratio
+                    cell_points.iloc[cell_pos]['center'] = center
+                    cell_points.iloc[cell_pos]['level'] = k
+                    cell_points.iloc[cell_pos]['num_points'] = min(num_points, self.cell_max_points[k])
+            multi_cell.append(cell_points)
+
+        for k in range(self.level):
+            multi_cell[k] = multi_cell[k].dropna(thresh=5)
+        return multi_cell
+
+    def test_compression_rate(self):
+
+        print ('calculating average testing compression rate ...')
+        cell_rate_record, sweep_rate_record = [], []
+        for i, sweep in enumerate(self.test_sweep):
+            if self.range_view == True:
+                sweep_cell = self.partition_single_range(sweep, i)
+            else:
+                sweep_cell = self.partition_single(sweep, i)
+            cell_rate, sweep_rate = self.calculate_compression_rate(sweep_cell[-1]) # only calculate compression on the finest scale
+            cell_rate_record.append(cell_rate)
+            sweep_rate_record.append(sweep_rate)
+        print ('average cell compression rate: %.6f' % (np.mean(cell_rate_record)))
+        print ('average sweep compression rate: %.6f' % (np.mean(sweep_rate_record)))
+
+    def calculate_compression_rate(self, sample_points):
+        compressed_cell = sample_points[sample_points['compressed']==True]
+        compressed_num = compressed_cell['num_points'].sum() * 3
+        compressed_cell_num = compressed_cell.shape[0]
+        latent_num = self.latent_dim * compressed_cell_num
+
+        original_cell = sample_points[sample_points['compressed']==False]
+        original_num = original_cell['num_points'].sum() * 3
+        total_compressed = latent_num + original_num
+        total_original = compressed_num + original_num
+        return latent_num/compressed_num, total_compressed/total_original
+
     def reconstruct_scene(self, cell_points, cell_info):
         scene = []
         for i in range(len(cell_info)):
@@ -742,30 +975,7 @@ class LoadData():
     def all_data(self):
         return self.cell_points
 
-    # basic bench mark
-    def random_compress(self, sample_points, num_points=7):
-        mean, var, mse = [], [], []
-        for i in range(len(sample_points)):
-            points, meta = sample_points.iloc[i]['points'], sample_points.iloc[i]['num_points']
-            idx = np.random.choice(meta, num_points, replace=False)
-            m, v, e = sweep_stat(points[:meta][idx], points[:meta])
-            mean.append(m)
-            var.append(v)
-            mse.append(e)
-        print ("random sampled compression, mean: {}. var: {}, mse: {}".format(np.mean(mean), 
-                                                                               np.mean(var), np.mean(mse)))
 
-    def kmeans_compress(self, sample_points, num_points=7, n_threads=16):
-        mean, var, mse = [], [], []
-        for i in range(len(sample_points)):
-            points, meta = sample_points.iloc[i]['points'], sample_points.iloc[i]['num_points']
-            centroids = KMeans(n_clusters=num_points, random_state=0, n_jobs=n_threads).fit(points)
-            m, v, e = sweep_stat(centroids.cluster_centers_, points[:meta])
-            mean.append(m)
-            var.append(v)
-            mse.append(e)
-        print ("random sampled compression, mean: {}. var: {}, mse: {}".format(np.mean(mean), 
-                                                                               np.mean(var), np.mean(mse)))
 
 
 # class LoadData():
@@ -1046,7 +1256,36 @@ def visualize_recon_points(points, recon, num=1000000, file_name='sample'):
     plt.axis('equal')
     plt.savefig(file_name)
 
-def visualize_3d_points(dataset, points=1.0, dir='.', filename='sample'):
+def set_axes_equal(ax):
+    '''Make axes of 3D plot have equal scale so that spheres appear as spheres,
+    cubes as cubes, etc..  This is one possible solution to Matplotlib's
+    ax.set_aspect('equal') and ax.axis('equal') not working for 3D.
+
+    Input
+      ax: a matplotlib axis, e.g., as output from plt.gca().
+    '''
+
+    x_limits = ax.get_xlim3d()
+    y_limits = ax.get_ylim3d()
+    z_limits = ax.get_zlim3d()
+
+    x_range = abs(x_limits[1] - x_limits[0])
+    x_middle = np.mean(x_limits)
+    y_range = abs(y_limits[1] - y_limits[0])
+    y_middle = np.mean(y_limits)
+    z_range = abs(z_limits[1] - z_limits[0])
+    z_middle = np.mean(z_limits)
+
+    # The plot bounding box is a sphere in the sense of the infinity
+    # norm, hence I call half the max range the plot radius.
+    plot_radius = 0.5*max([x_range, y_range, z_range])
+
+    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
+    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
+    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+
+
+def visualize_3d_points(dataset, points=1.0, elev=40, azim=75, dir='.', filename='sample'):
     """
     Displays statistics for a single frame. 3D plot of the lidar point cloud data and point cloud
     projections to various planes.
@@ -1091,8 +1330,13 @@ def visualize_3d_points(dataset, points=1.0, dir='.', filename='sample'):
                         
     # Draw point cloud data as 3D plot
     f2 = plt.figure(figsize=(15, 8))
-    ax2 = f2.add_subplot(111, projection='3d')                    
-    draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-10,30))
+    ax2 = f2.add_subplot(111, projection='3d')
+    ax2.axes.set_aspect('equal')
+    ax2.view_init(elev=elev, azim=azim)
+    draw_point_cloud(ax2, 'Velodyne scan')
+    # draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-40,40), ylim3d=(-100,100), zlim3d=(-2,10))
+    # draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-20,20))
+    # set_axes_equal(ax2)
     plt.savefig(dir+'/3d_point_cloud_'+filename)
     
     # Draw point cloud data as plane projections
@@ -1113,6 +1357,78 @@ def visualize_3d_points(dataset, points=1.0, dir='.', filename='sample'):
         axes=[1, 2] # Y and Z axes
     )
     plt.savefig(dir+'/2d_point_cloud_'+filename)
+
+# def visualize_3d_points(dataset, points=1.0, dir='.', filename='sample'):
+#     """
+#     Displays statistics for a single frame. 3D plot of the lidar point cloud data and point cloud
+#     projections to various planes.
+    
+#     Parameters
+#     ----------
+#     dataset         : `raw` dataset.
+#     points          : Fraction of lidar points to use. Defaults to `0.2`, e.g. 20%.
+#     """
+
+#     dataset_velo = dataset
+    
+#     points_step = int(1. / points)
+#     point_size = 0.05 * (1. / points)
+#     velo_range = range(0, dataset_velo.shape[0], points_step)
+#     velo_frame = dataset_velo[velo_range, :]      
+#     def draw_point_cloud(ax, title, axes=[0, 1, 2], xlim3d=None, ylim3d=None, zlim3d=None):
+#         """
+#         Convenient method for drawing various point cloud projections as a part of frame statistics.
+#         """
+#         ax.grid(False)
+#         ax.scatter(*np.transpose(velo_frame[:, axes]), s=point_size, cmap='gray')
+#         ax.set_title(title)
+#         ax.set_xlabel('{} axis'.format(axes_str[axes[0]]))
+#         ax.set_ylabel('{} axis'.format(axes_str[axes[1]]))
+#         if len(axes) > 2:
+#             ax.set_xlim3d(*axes_limits[axes[0]])
+#             ax.set_ylim3d(*axes_limits[axes[1]])
+#             ax.set_zlim3d(*axes_limits[axes[2]])
+#             ax.set_zlabel('{} axis'.format(axes_str[axes[2]]))
+#         else:
+#             # ax.set_xlim(-30, 30)
+#             # ax.set_ylim(-30, 30)
+#             ax.set_xlim(*axes_limits[axes[0]])
+#             ax.set_ylim(*axes_limits[axes[1]])
+#         # User specified limits
+#         if xlim3d!=None:
+#             ax.set_xlim3d(xlim3d)
+#         if ylim3d!=None:
+#             ax.set_ylim3d(ylim3d)
+#         if zlim3d!=None:
+#             ax.set_zlim3d(zlim3d)
+        
+
+#     # Draw point cloud data as 3D plot
+#     f2 = plt.figure(figsize=(15, 8))
+#     ax2 = f2.add_subplot(111, projection='3d')        
+#     # ax2 = Axes3D(f2)
+#     ax2.view_init(elev=20)
+#     draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-10,30))
+#     plt.savefig(dir+'/3d_point_cloud_'+filename)
+    
+#     # Draw point cloud data as plane projections
+#     f, ax3 = plt.subplots(3, 1, figsize=(15, 25))
+#     draw_point_cloud(
+#         ax3[0], 
+#         'Velodyne scan, XZ projection (Y = 0), the car is moving in direction left to right', 
+#         axes=[0, 2] # X and Z axes
+#     )
+#     draw_point_cloud(
+#         ax3[1], 
+#         'Velodyne scan, XY projection (Z = 0), the car is moving in direction left to right', 
+#         axes=[0, 1] # X and Y axes
+#     )
+#     draw_point_cloud(
+#         ax3[2], 
+#         'Velodyne scan, YZ projection (X = 0), the car is moving towards the graph plane', 
+#         axes=[1, 2] # Y and Z axes
+#     )
+#     plt.savefig(dir+'/2d_point_cloud_'+filename)
 
 
 

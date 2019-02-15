@@ -371,6 +371,30 @@ def octree_func( dic, indexArray, max_node, max_depth, max_size, center ):
         myTree.myIterate(dic, cells)
 
 
+# def octree_func( dic, indexArray, max_node, max_depth, max_size, center ):
+#         # Create a new octree, size of world
+#         N = len(indexArray)
+#         #print(indexArray) 
+#         myTree = Octree(
+#             max_size,    #maximum index range
+#             center,
+#             'nodes',
+#             max_node
+#         )
+
+#         # Insert some random objects and time it
+#         obj = []
+#         for index, (x,y,z) in enumerate(indexArray):
+#             #print ( indexArray[index])
+#             myObject = TestObject(str(index), indexArray[index])
+#             myTree.insertNode(myObject.position, myObject)
+
+#         #for i, x in enumerate(myTree.iterateDepthFirst()):
+#             #print(i, ":", x)
+#         cells=[]*N
+#         myTree.myIterate(dic, cells)
+
+
 # testing code
 ### Object Insertion Test ###
 

@@ -23,14 +23,18 @@ from external.structural_losses.tf_approxmatch import approx_match, match_cost
 FLAGS = tf.flags.FLAGS
 
 # Training options.
-tf.flags.DEFINE_string("save_path", "/scratch4/sniu/pointnet_full_emd/",
+tf.flags.DEFINE_string("save_path", "/scratch1/sniu/pc/test/",
                        "Checkpointing directory.")
 tf.flags.DEFINE_string("data_in_dir", "/scratch2/sniu/kitti/",
                        "data input dir")
+tf.flags.DEFINE_string("hdmap_dir", "/scratch2/sniu/hdmap/",
+                       "data input dir")
 tf.flags.DEFINE_string("date", "2011_09_26",
                        "which date to use")
-tf.flags.DEFINE_string("weights", "model_490.ckpt",
+tf.flags.DEFINE_string("weights", "model-260.ckpt",
                        "which date to use")
+tf.flags.DEFINE_string("dataset", "kitti",
+                       "which data to use [kitti|hdmap]")
 
 # partition
 tf.flags.DEFINE_string("partition_mode", 'grid', 
@@ -49,28 +53,37 @@ tf.flags.DEFINE_string("cell_min_points", '50',
 #                        "kmeans, spectral, dirichlet")
 
 # compression
-tf.flags.DEFINE_string("compression_mode", "pointnet",
-                       "[kmeans|octree|pointnet|pointgrid], pointnet and pointgrid are neural network based")
+tf.flags.DEFINE_string("mode", "autoencoder",
+                       "[kmeans|random|autoencoder], random, kmeans or autoencoder based")
 tf.flags.DEFINE_string("loss_type", "chamfer",
                        "loss type [chamfer|emd]")
 tf.flags.DEFINE_string("encoder", "pointnet",
-                       "encoder configuration [pointnet]")
+                       "encoder configuration [pointnet|magic|dgcnn|inception]")
 tf.flags.DEFINE_string("decoder", "pointnet",
                        "decoder configuration [pointnet|pointgrid]")
-tf.flags.DEFINE_integer("num_points", 200,
-                       "number of points in point cloud")
+tf.flags.DEFINE_string("pooling", "max",
+                       "use mean pooling")
 tf.flags.DEFINE_integer("batch_size", 512,
                        "batch size")
-tf.flags.DEFINE_integer("latent_dim", 16,
+tf.flags.DEFINE_integer("latent_dim", 18,
                        "latent code dimension")
-tf.flags.DEFINE_integer("top_k", 10,
-                       "number of sampling points in sampling mode")
+tf.flags.DEFINE_integer("top_k", 20,
+                       "number of k nearest neighbor for dgcnn and inception")
+tf.flags.DEFINE_boolean("rotation", False, 
+                       "if adding rotation module or not")
+tf.flags.DEFINE_boolean("range_view", False, 
+                       "if adding rotation module or not")
+
 
 # training config
-tf.flags.DEFINE_boolean("stacked", True, 
+tf.flags.DEFINE_integer("num_gpus", 2,
+                       "number of gpu")
+tf.flags.DEFINE_boolean("stacked", False, 
                        "if it is multi-scale or not")
+tf.flags.DEFINE_boolean("training", False, 
+                       "whether it is train or evaluation")
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
-tf.flags.DEFINE_integer("num_epochs", 500,
+tf.flags.DEFINE_integer("num_epochs", 280,
                        "number of training epoch")
 tf.flags.DEFINE_integer("decay_step", 200000,
                        "Decay step for lr decay [default: 200000]")
@@ -80,15 +93,14 @@ tf.flags.DEFINE_float("learning_rate", 0.001,
                       "learning rate")
 
 
-
 train_drives = ['0001', '0002', '0005', '0011', '0013', '0014', '0015', '0017', '0018', '0019',
                 '0020', '0022', '0023', '0027', '0028', '0029', '0032', '0035', '0036', '0039',
                 '0046', '0048', '0051', '0052', '0056', '0057', '0059', '0060', '0061', '0064',
                 '0070', '0079', '0084', '0052', '0056', '0057', '0059', '0060', '0061', '0064']
 test_drives = ['0101', '0104', '0106', '0113', '0117']
 
-#train_drives = ['0001']
-#test_drives = ['0002']
+# train_drives = ['0001']
+# test_drives = ['0005']
 # drives = ['0001']
 
 # if FLAGS.partition_mode == 0:
@@ -123,6 +135,27 @@ test_drives = ['0101', '0104', '0106', '0113', '0117']
 #             models.append(AutoEncoder(FLAGS, l))
 #             models[l].train(point_cell)
 
+
+def evaluate_sweep():
+    util.create_dir(FLAGS.save_path)
+
+    # step 1 Partition
+    point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
+
+    level = len(list(map(int, FLAGS.PL.split(','))))
+    print ('training grain from corase to fine')
+
+    l = 0
+    model = AutoEncoder(FLAGS, l)
+    ckpt_name = FLAGS.weights
+    # ckpt_path = util.create_dir(osp.join(model.save_path, 'level_%s' % (model.current_level)))
+    # model.saver.restore(model.sess, os.path.join(ckpt_path, ckpt_name))
+
+    # model.train(point_cell)
+    # ckpt_name = 'model-10.ckpt'
+    model.predict_test(point_cell, ckpt_name, FLAGS.mode)
+    point_cell.test_compression_rate()
+    
 
 def train():
     util.create_dir(FLAGS.save_path)
@@ -164,6 +197,7 @@ def train():
 
     point_cell.test_compression_rate()
 
+    ckpt_name = FLAGS.weights
 
 def test():
 
@@ -178,6 +212,12 @@ def test():
     ckpt_name = FLAGS.weights
     sample_generated = model.predict(sample_points, sample_info, ckpt_name)
     train_generated = model.predict(train_points, train_info, ckpt_name)
+
+    # plot
+    i = 170
+    p = np.random.choice(point_cell.train_cleaned_velo[i].shape[0], 30000, replace=False)
+    points = point_cell.train_cleaned_velo[i][p]
+    util.visualize_3d_points(points, filename='test')
 
     # measure emd distance
     # x_reconstr, gt = tf.placeholder(tf.float32, [1, None, 3]), tf.placeholder(tf.float32, [1, None, 3])
@@ -205,7 +245,9 @@ def test():
     util.visualize_3d_points(reconstruction_train, dir='.', filename='recon_train')
 
 if __name__ == '__main__':
-    # if is_training == True:
-    train()
+    if FLAGS.training == True:
+        train()
+    else:
+        evaluate_sweep()
     # else:
         # test()
