@@ -69,12 +69,12 @@ class AutoEncoder():
         self.save_freq = FLAGS.save_freq
         self.save_path = FLAGS.save_path
         self.fb_split = FLAGS.fb_split
-        self.level = len(FLAGS.PW)
         self.L = list(map(int, FLAGS.PL.split(',')))
         self.W = list(map(int, FLAGS.PL.split(',')))
+        self.level = len(self.L)
         self.dataset = FLAGS.dataset
 
-        self.range_view = FLAGS.range_view
+        self.range_view = True if FLAGS.partition_mode == 'range' else False
         self.learning_rate = FLAGS.learning_rate
         self.loss_type = FLAGS.loss_type
         self.origin_num_points = list(map(int, FLAGS.cell_max_points.split(',')))
@@ -117,12 +117,14 @@ class AutoEncoder():
                                          is_training=self.is_training, 
                                          n_filters=[64, 64, 128, self.latent_dim],
                                          bn_decay=bn_decay,
+                                         activation_function=tf.nn.relu,
                                          name="encoder")
             elif self.encoder_mode == 'dgcnn':
                 net = tf_util.dgcnn(point_cloud=net,
                                     is_training=self.is_training, 
                                     n_filters=[64, 64, 64, 128, self.latent_dim],
                                     k=self.top_k,
+                                    activation_function=tf.nn.relu,
                                     bn_decay=bn_decay)
             elif self.encoder_mode == 'magic':
                 net = tf_util.magic(net,
@@ -137,6 +139,7 @@ class AutoEncoder():
                                               is_training=self.is_training, 
                                               n_filters=[64, 64, 64, 128, self.latent_dim],
                                               max_k=self.top_k,
+                                              activation_function=tf.nn.relu,
                                               bn_decay=bn_decay)
 
         return mask * net, transform
@@ -495,8 +498,8 @@ class AutoEncoder():
 
     def train_image(self, point_cell):
         '''
-		training on pixel level, under construction
-    	'''
+        training on pixel level, under construction
+        '''
         train_point, valid_point, test_point, \
         train_meta, valid_meta, test_meta = self.preprocess_image(point_cell, self.current_level, mode)
 
@@ -523,7 +526,8 @@ class AutoEncoder():
 
     def evaluate(self, valid_point, valid_meta, save_path, test=False):
         '''
-        this function evaluate cell-level emd loss and chamfer loss, and sweep-level mean, var, mse
+        this function evaluate cell-level emd loss and chamfer loss, and sweep-level mean, var, mse,
+        note that this only evaluate one sample sweep
         '''
         valid_emd_loss, valid_chamfer_loss = [], []
         mean_arr, var_arr, mse_arr = [], [], []
@@ -606,7 +610,7 @@ class AutoEncoder():
         this is the main function for evaluation, which is the function to obtain the evaluated results 
         filled in paper table, the function contains kmeans, random, octree, learning based method (autoencoder).
         all displayed results are sweep-level on testing set.
-    	'''
+        '''
         points = point_cell.test_cell[0]
         if self.range_view == False:
             sweep_size = self.L[level_idx] * self.W[level_idx]
@@ -731,7 +735,7 @@ class AutoEncoder():
         '''
         this is the plot function that plot hdmap in testing set, This plot function 
         is not stable, [TODO]: need to include octree
-    	'''
+        '''
         points = point_cell.test_cell[0]
         test_batch_size = self.batch_size
         if mode == 'autoencoder':
@@ -811,7 +815,7 @@ class AutoEncoder():
     def plot_sweep(self, point_cell, idx, ckpt_name, mode, num_points=6, level_idx=0):
         '''
         this is sample plot function that plot kitti in testing set, spcified by idx
-    	'''
+        '''
         points = point_cell.test_cell[0]
         test_batch_size = self.batch_size
         if mode == 'autoencoder':
@@ -963,8 +967,8 @@ class AutoEncoder():
 
     def predict_test(self, point_cell, ckpt_name, mode):
         '''
-    	wrapper for evaluate_sweep function
-    	'''
+        wrapper for evaluate_sweep function
+        '''
         ckpt_path = util.create_dir(osp.join(self.save_path, 'level_%s' % (self.current_level)))
         # self.sess.run(tf.global_variables_initializer())
         self.saver.restore(self.sess, os.path.join(ckpt_path, ckpt_name))
@@ -1008,55 +1012,112 @@ class StackAutoEncoder(AutoEncoder):
     def __init__(self, FLAGS):
         super(SEGAN, self).__init__(FLAGS)
 
+    def _ae(self, pc, mask, bn_decay):
+
+        # ------- encoder -------
+        stacked_code = []
+        for l in self.level:
+             net, rotation = self._encoder(pc[l], mask[l], bn_decay, name_scope='encoder_l%d'%l)
+            # max pool
+            if self.pooling == 'mean':
+                code = tf.reduce_mean(net, axis=-2, keepdims=False)
+            elif self.pooling == 'max':
+                code = tf.reduce_max(net, axis=-2, keepdims=False)
+            print (code)
+            stacked_code.append(code)
+            if l == 0:
+                transform = rotation
+
+        stacked_code = tf.concat(stacked_code, axis=-1)
+        combined_code = self._fuse(stacked_code)
+
+        # ------- decoder ------- 
+        x_reconstr = self._decoder(combined_code, mask[0], bn_decay, name_scope='decoder')
+        if self.rotation == True:
+            # rotate_matrix = tf.stop_gradient(tf.matrix_inverse(transform))
+            rotate_matrix = tf.matrix_inverse(transform)
+
+            return tf.matmul(x_reconstr, rotate_matrix)
+        else:
+            return x_reconstr
+
+    def _fuse(self, code):
+        code = tf.expand_dims(code, -2)
+        code = tf_util.point_conv(code, 
+                         self.is_training, 
+                         n_filters=[32, self.latent_dim],
+                         activation_function=None,
+                         name="fuse")
+        return code
+
     def _build_model(self, g):
+
         with g.as_default():
-            # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
-            self.top_pc = tf.placeholder(tf.float32, [None, self.origin_num_points[0], 3])
-            self.top_meta = tf.placeholder(tf.int32, [None])
-            top_mask = tf.sequence_mask(self.top_meta, maxlen=self.origin_num_points[0], dtype=tf.float32)
-            self.top_mask = tf.expand_dims(top_mask, -1)
-
-            if len(self.origin_num_points) == 1:
-                print ("Error!: not stacked model")
-                raise 
-
-            self.low_pc = tf.placeholder(tf.float32, [None, self.origin_num_points[1], 3])
-            self.low_meta = tf.placeholder(tf.int32, [None])
-            low_mask = tf.sequence_mask(self.low_meta, maxlen=self.origin_num_points[1], dtype=tf.float32)
-            self.low_mask = tf.expand_dims(low_mask, -1)
+            self.pc, self.mask, self.meta = [], [], []
+            for l in self.level:
+                # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
+                self.pc.append(tf.placeholder(tf.float32, [None, self.origin_num_points[self.current_level], 3]))
+                meta = tf.placeholder(tf.int32, [None])
+                self.meta.append(meta)
+                mask = tf.sequence_mask(meta, maxlen=self.origin_num_points[l], dtype=tf.float32)
+                self.mask.append(tf.expand_dims(mask, -1))
 
             self.is_training = tf.placeholder(tf.bool, shape=())
-            
             batch = tf.get_variable('batch', [],
                 initializer=tf.constant_initializer(0), trainable=False)
 
-            self.x_reconstr = self._ae(self.top_pc, self.top_mask, self.low_pc, self.low_mask)
-
-            match = approx_match(self.low_pc, self.x_reconstr)
-            self.emd_loss = tf.reduce_mean(match_cost(self.low_pc, self.x_reconstr, match))
+            bn_decay = self.get_bn_decay(batch)
 
             def calculate_chamfer(recon, orig, num_points):
                 x_reconstr, pc = tf.expand_dims(recon[:num_points], 0), tf.expand_dims(orig[:num_points], 0)
                 cost_p1_p2, _, cost_p2_p1, _ = nn_distance(x_reconstr, pc)
-                return tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
-
-            # self.chamfer_loss = calculate_chamfer(self.x_reconstr, self.pc)
-            self.chamfer_loss = tf.reduce_mean(tf.map_fn(lambda x: calculate_chamfer(x[0], x[1], x[2]), 
-                                                         (self.x_reconstr, self.low_pc, self.low_meta), dtype=tf.float32))
-            #  -------  loss + optimization  ------- 
-            if self.loss_type == "emd":
-                self.reconstruction_loss = self.emd_loss
-            elif self.loss_type == "chamfer":
-                self.reconstruction_loss = self.chamfer_loss
+                chamfer_return = tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
+                chamfer_return = tf.where(tf.is_nan(chamfer_return), 0., chamfer_return)
+                return chamfer_return
 
             # reg_losses = self.graph.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
 
             learning_rate = self.get_learning_rate(batch)
             optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
 
+            tower_grads = []
+            pred_gpu = []
+            total_emd_loss, total_chamfer_loss = [], []
+            for i in range(self.num_gpus):
+                with tf.variable_scope(tf.get_variable_scope(), reuse=True):
+                    with tf.device('/gpu:%d'%(i)), tf.name_scope('gpu_%d'%(i)) as scope:
+                        pc_batch = [tf.slice(layer_pc, [i*self.device_batch_size,0,0], [self.device_batch_size,-1,-1]) for layer_pc in self.pc]
+                        meta_batch = [tf.slice(layer_meta, [i*self.device_batch_size], [self.device_batch_size]) for layer_meta in self.meta]
+                        mask_batch = [f.slice(layer_mask, [i*self.device_batch_size,0,0], [self.device_batch_size,-1,-1]) for layer_mask in self.mask]
+
+                        x_reconstr = self._ae(pc_batch, mask_batch, bn_decay)
+
+                        match = approx_match(pc_batch[0], x_reconstr)
+                        emd_loss = tf.reduce_mean(match_cost(pc_batch[0], x_reconstr, match))
+            
+                        # self.chamfer_loss = calculate_chamfer(self.x_reconstr, self.pc)
+                        chamfer_loss = tf.reduce_mean(tf.map_fn(lambda x: calculate_chamfer(x[0], x[1], x[2]), 
+                                                                     (x_reconstr, pc_batch[0], meta_batch[0]), dtype=tf.float32))
+                        #  -------  loss + optimization  ------- 
+                        if self.loss_type == "emd":
+                            reconstruction_loss = emd_loss
+                        elif self.loss_type == "chamfer":
+                            reconstruction_loss = chamfer_loss
+
+                        grads = optimizer.compute_gradients(reconstruction_loss)
+                        tower_grads.append(grads)
+                        pred_gpu.append(x_reconstr)
+                        total_emd_loss.append(emd_loss)
+                        total_chamfer_loss.append(chamfer_loss)
+                        
+            self.x_reconstr = tf.concat(pred_gpu, 0)
+            self.emd_loss = tf.reduce_mean(total_emd_loss)
+            self.chamfer_loss = tf.reduce_mean(total_chamfer_loss)
+            grads = average_gradients(tower_grads)
+
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
-                self.train_op = optimizer.minimize(self.reconstruction_loss, global_step=batch)
+                self.train_op = optimizer.apply_gradients(grads, global_step=batch)
             
             config = tf.ConfigProto()
             config.gpu_options.allow_growth = True
@@ -1065,7 +1126,9 @@ class StackAutoEncoder(AutoEncoder):
             self.sess = tf.Session(config=config)
 
             self.sess.run(tf.global_variables_initializer())
+            # self.saver = tf.train.Saver(tf.trainable_variables() + tf.get_collection_ref("batch_norm_non_trainable_variables_co‌​llection"))
             self.saver = tf.train.Saver()
+
 
     def train(self, point_cell, mode='foreground'):
 

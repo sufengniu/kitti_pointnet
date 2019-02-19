@@ -38,7 +38,7 @@ tf.flags.DEFINE_string("dataset", "kitti",
 
 # partition
 tf.flags.DEFINE_string("partition_mode", 'grid', 
-                       "currently only support regular grid partition")
+                       "how to partition the sweep, grid partition, or range view partition [grid|range]")
 tf.flags.DEFINE_boolean("fb_split", False, 
                        "if split data as foreground and background")
 tf.flags.DEFINE_string("PW", '32', # x: width, y: length, coarse grain ,...., fine grain
@@ -71,8 +71,6 @@ tf.flags.DEFINE_integer("top_k", 20,
                        "number of k nearest neighbor for dgcnn and inception")
 tf.flags.DEFINE_boolean("rotation", False, 
                        "if adding rotation module or not")
-tf.flags.DEFINE_boolean("range_view", False, 
-                       "if adding rotation module or not")
 
 
 # training config
@@ -103,14 +101,6 @@ test_drives = ['0101', '0104', '0106', '0113', '0117']
 # test_drives = ['0005']
 # drives = ['0001']
 
-# if FLAGS.partition_mode == 0:
-#     train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "f_%s_%s" % (FLAGS.compression_mode, FLAGS.loss)))
-# elif FLAGS.partition_mode == 1:
-#      train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "b_%s_%s" % (FLAGS.compression_mode, FLAGS.loss)))
-# elif FLAGS.partition_mode == 2:
-#      train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s" % (FLAGS.compression_mode, FLAGS.loss)))
-# elif FLAGS.partition_mode == 3:
-#      train_dir = tf_util.create_dir(osp.join(FLAGS.top_out_dir, "%s_%s_%s" % (FLAGS.cluster_mode, FLAGS.compression_mode, FLAGS.loss)))
 
 # def train():
 #     util.create_dir(FLAGS.save_path)

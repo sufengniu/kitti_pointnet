@@ -525,7 +525,7 @@ class LoadData():
         self.max_y_dist = 16.0
         self.max_z_dist = 3.0
         self.latent_dim = args.latent_dim
-        self.range_view = args.range_view
+        self.range_view = True if args.partition_mode == 'range' else False
         self.num_sample_points = 5000
 
         self.num_hdmap_test = 1
