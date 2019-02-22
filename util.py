@@ -539,12 +539,9 @@ class LoadData():
         self.image_width = 64 # can tune
         self.dataset = args.dataset
         
-        if self.range_view == True:
-            self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio',
-                            'center', 'level', 'num_points', 'compressed', 'row', 'col']
-        else:
-            self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio', 
-                            'center', 'level', 'num_points', 'compressed']
+        self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio',
+                        'center', 'level', 'num_points', 'compressed', 'row', 'col']
+        
         if self.level > 1:
             self.cell_set = []
             for i in range(self.level):
@@ -836,6 +833,8 @@ class LoadData():
                     cell_points.iloc[cell_pos]['index'] = idx
                     cell_points.iloc[cell_pos]['ratio'] = ratio
                     cell_points.iloc[cell_pos]['center'] = center
+                    cell_points.iloc[cell_pos]['row'] = i
+                    cell_points.iloc[cell_pos]['col'] = j
                     cell_points.iloc[cell_pos]['level'] = k
                     cell_points.iloc[cell_pos]['num_points'] = min(num_points, self.cell_max_points[k])
             multi_cell.append(cell_points)

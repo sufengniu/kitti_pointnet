@@ -41,13 +41,13 @@ tf.flags.DEFINE_string("partition_mode", 'grid',
                        "how to partition the sweep, grid partition, or range view partition [grid|range]")
 tf.flags.DEFINE_boolean("fb_split", False, 
                        "if split data as foreground and background")
-tf.flags.DEFINE_string("PW", '32', # x: width, y: length, coarse grain ,...., fine grain
+tf.flags.DEFINE_string("PW", '32,16', # x: width, y: length, coarse grain ,...., fine grain
                        "number of partitions for wideth, if it is list, it becomes the multi-scale") 
-tf.flags.DEFINE_string("PL", '32', 
+tf.flags.DEFINE_string("PL", '32,16', 
                        "number of partition for length, same as PW")
-tf.flags.DEFINE_string("cell_max_points", '512', 
+tf.flags.DEFINE_string("cell_max_points", '512,512', 
                        "maximum number of points in the cell")
-tf.flags.DEFINE_string("cell_min_points", '50', 
+tf.flags.DEFINE_string("cell_min_points", '50,50', 
                        "minimum number of points in the cell")
 # tf.flags.DEFINE_string("cluster_mode", 'kmeans',
 #                        "kmeans, spectral, dirichlet")
@@ -135,16 +135,18 @@ def evaluate_sweep():
     level = len(list(map(int, FLAGS.PL.split(','))))
     print ('training grain from corase to fine')
 
-    l = 0
-    model = AutoEncoder(FLAGS, l)
+    model = AutoEncoder(FLAGS)
     ckpt_name = FLAGS.weights
     # ckpt_path = util.create_dir(osp.join(model.save_path, 'level_%s' % (model.current_level)))
     # model.saver.restore(model.sess, os.path.join(ckpt_path, ckpt_name))
 
     # model.train(point_cell)
     # ckpt_name = 'model-10.ckpt'
-    model.predict_test(point_cell, ckpt_name, FLAGS.mode)
-    point_cell.test_compression_rate()
+    if FLAGS.compress == True:
+        model.compress_sweep(point_cell, ckpt_name)
+    else:
+        model.predict_test(point_cell, ckpt_name, FLAGS.mode)
+        point_cell.test_compression_rate()
     
 
 def train():
@@ -156,7 +158,7 @@ def train():
     level = len(list(map(int, FLAGS.PL.split(','))))
     print ('training grain from corase to fine')
 
-    if FLAGS.stacked == True:
+    if level > 2: # multi-scale autoencoder
         if FLAGS.fb_split == True:
             # step 2 compression
             model_f = StackAutoEncoder(FLAGS)
@@ -174,15 +176,15 @@ def train():
         l = 0
         if FLAGS.fb_split == True:
             # step 2 compression
-            model_f = AutoEncoder(FLAGS, l)
+            model_f = AutoEncoder(FLAGS)
             model_f.train(point_cell, mode='foreground')
             # model_f.predict()
             
-            model_d = AutoEncoder(FLAGS, l)
+            model_d = AutoEncoder(FLAGS)
             model_d.train(point_cell, mode='background')
 
         else:
-            model = AutoEncoder(FLAGS, l)
+            model = AutoEncoder(FLAGS)
             model.train(point_cell)
 
     point_cell.test_compression_rate()
