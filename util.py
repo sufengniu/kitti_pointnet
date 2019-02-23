@@ -527,6 +527,7 @@ class LoadData():
         self.latent_dim = args.latent_dim
         self.range_view = True if args.partition_mode == 'range' else False
         self.num_sample_points = 5000
+        self.load_all_kitti = True
 
         self.num_hdmap_test = 1
         self.lower_min_elevate_angle = -24.33
@@ -606,16 +607,25 @@ class LoadData():
                 dataset = load_dataset(args.date, drive, self.basedir)
                 self.data_id += [args.date + '_' + drive]
                 data_len = len(list(dataset.velo))
-                Idx = random.sample(range(data_len), self.num_to_select)
-                # for visualization
-                # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
-                # frame = 10 # for visualization
-                # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
-                self.train_dataset_gray += [list(dataset.gray)[i] for i in Idx]
-                self.train_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
-                self.train_dataset_velo += [list(dataset.velo)[i] for i in Idx]
-                # self.train_dataset_velo += list(dataset.velo)
-            
+                if self.load_all_kitti == False:
+                    Idx = random.sample(range(data_len), self.num_to_select)
+                    # for visualization
+                    # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
+                    # frame = 10 # for visualization
+                    # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
+                    self.train_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+                    self.train_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+                    self.train_dataset_velo += [list(dataset.velo)[i] for i in Idx]
+                    # self.train_dataset_velo += list(dataset.velo)
+                else:
+                    # for visualization
+                    # tracklet_rects, tracklet_types = load_tracklets_for_frames(len(list(dataset.velo)), '{}/{}/{}_drive_{}_sync/tracklet_labels.xml'.format(basedir, date, date, drive))
+                    # frame = 10 # for visualization
+                    # display_frame_statistics(dataset, tracklet_rects, tracklet_types, frame)
+                    self.train_dataset_gray += list(dataset.gray)
+                    self.train_dataset_rgb += list(dataset.rgb)
+                    self.train_dataset_velo += list(dataset.velo)
+
             self.train_cleaned_velo = []
             for points in self.train_dataset_velo:
                 idx_z = np.squeeze(np.argwhere(abs(points[:,2]) > self.max_z_dist)) # remove all points below -3.0 in z-axis

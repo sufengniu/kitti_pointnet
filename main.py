@@ -80,6 +80,8 @@ tf.flags.DEFINE_boolean("stacked", False,
                        "if it is multi-scale or not")
 tf.flags.DEFINE_boolean("training", False, 
                        "whether it is train or evaluation")
+tf.flags.DEFINE_boolean("compress", True, 
+                       "whether it compress or not")
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 tf.flags.DEFINE_integer("num_epochs", 280,
                        "number of training epoch")
@@ -143,7 +145,7 @@ def evaluate_sweep():
     # model.train(point_cell)
     # ckpt_name = 'model-10.ckpt'
     if FLAGS.compress == True:
-        model.compress_sweep(point_cell, ckpt_name)
+        model.compress(point_cell, ckpt_name)
     else:
         model.predict_test(point_cell, ckpt_name, FLAGS.mode)
         point_cell.test_compression_rate()

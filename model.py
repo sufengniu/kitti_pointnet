@@ -17,6 +17,7 @@ import tf_util
 import provider
 from transform_nets import *
 import octree 
+import h5py
 
 from external.structural_losses.tf_nndistance import nn_distance
 from external.structural_losses.tf_approxmatch import approx_match, match_cost
@@ -205,7 +206,6 @@ class AutoEncoder():
         elif self.pooling == 'max':
             code = tf.reduce_max(net, axis=-2, keepdims=False)
         print (code)
-        self.latent_code = code
 
         # ------- decoder ------- 
         x_reconstr = self._decoder(code, mask, bn_decay, name_scope='decoder')
@@ -213,12 +213,11 @@ class AutoEncoder():
             # rotate_matrix = tf.stop_gradient(tf.matrix_inverse(transform))
             rotate_matrix = tf.matrix_inverse(transform)
 
-            return tf.matmul(x_reconstr, rotate_matrix)
+            return tf.matmul(x_reconstr, rotate_matrix), code
         else:
-            return x_reconstr
+            return x_reconstr, code
 
     def _pixel(self, embedding, bn_decay):
-        
         
         net = conv2d(net, n_filter, [1,1],
              padding='VALID', stride=[1,1],
@@ -256,6 +255,7 @@ class AutoEncoder():
 
             tower_grads = []
             pred_gpu = []
+            latent_gpu = []
             total_emd_loss, total_chamfer_loss = [], []
             for i in range(self.num_gpus):
                 with tf.variable_scope(tf.get_variable_scope(), reuse=True):
@@ -264,7 +264,7 @@ class AutoEncoder():
                         meta_batch = tf.slice(self.meta, [i*self.device_batch_size], [self.device_batch_size])
                         mask_batch = tf.slice(self.mask, [i*self.device_batch_size,0,0], [self.device_batch_size,-1,-1])
 
-                        x_reconstr = self._ae(pc_batch, mask_batch, bn_decay)
+                        x_reconstr, code = self._ae(pc_batch, mask_batch, bn_decay)
 
                         match = approx_match(pc_batch, x_reconstr)
                         emd_loss = tf.reduce_mean(match_cost(pc_batch, x_reconstr, match))
@@ -281,10 +281,12 @@ class AutoEncoder():
                         grads = optimizer.compute_gradients(reconstruction_loss)
                         tower_grads.append(grads)
                         pred_gpu.append(x_reconstr)
+                        latent_gpu.append(code)
                         total_emd_loss.append(emd_loss)
                         total_chamfer_loss.append(chamfer_loss)
                         
             self.x_reconstr = tf.concat(pred_gpu, 0)
+            self.latent_code = tf.concat(latent_gpu, 0)
             self.emd_loss = tf.reduce_mean(total_emd_loss)
             self.chamfer_loss = tf.reduce_mean(total_chamfer_loss)
             grads = average_gradients(tower_grads)
@@ -1002,11 +1004,11 @@ class AutoEncoder():
         ckpt_path = util.create_dir(osp.join(self.save_path, 'level_%s' % (self.current_level)))
         # self.sess.run(tf.global_variables_initializer())
         self.saver.restore(self.sess, os.path.join(ckpt_path, ckpt_name))
-        all_sweep = point_cell.train_cleaned_velo + point_cell.test_cleaned_velo
-        all_cell = point_cell.partition_batch(all_sweep, permutation=False)
-        self.compress_sweep()
+        self.compress_sweep(point_cell, num_points=(self.latent_dim//3))
 
-    def compress_sweep(self, points, level_idx=0)
+    def compress_sweep(self, point_cell, num_points, level_idx=0):
+        all_sweep = point_cell.train_cleaned_velo + point_cell.test_cleaned_velo
+        points = (point_cell.partition_batch(all_sweep, permutation=False))[0]
         if self.range_view == False:
             sweep_size = self.L[level_idx] * self.W[level_idx]
         else:
@@ -1015,6 +1017,7 @@ class AutoEncoder():
         pred_code = []
         pred_all = []
         orig_all = []
+        print ("\nCompression...\n")
         for i in tqdm(range(0, len(points), sweep_size)):
             s, e = i, i+sweep_size
             sweep_compress, compress_meta, sweep_orig, orig_meta = self.extract_sweep(points, s, e, level_idx)
@@ -1030,7 +1033,7 @@ class AutoEncoder():
             total_points = []
             sweep_code = np.zeros([self.L[level_idx], self.W[level_idx], self.latent_dim])
 
-            test_batch_size = 256 # hard coded, do not change other value except [64,128,256,512]
+            test_batch_size = self.batch_size # hard coded, do not change other value except [64,128,256,512]
             for j in range(len(sweep_compress)//test_batch_size + 1):
                 valid_s, valid_e = j*test_batch_size, min((j+1)*test_batch_size, len(sweep_compress))
                 if valid_e - valid_s == test_batch_size:
@@ -1047,7 +1050,7 @@ class AutoEncoder():
                 code, recon = self.sess.run([self.latent_code, self.x_reconstr], feed_dict)
                 r, c = compress_row[valid_s:valid_e], compress_col[valid_s:valid_e]
                 # emd loss and chamfer loss return mean of batch, should multiply batch_size
-                sweep_code[r,c] = code
+                sweep_code[r,c] = code[:(valid_e-valid_s)]
                 total_points.append(recon)
 
             # orig = np.concatenate([sweep_compress[~np.all(sweep_compress == 0, axis=2)], sweep_orig[~np.all(sweep_orig == 0, axis=2)]], axis=0)
@@ -1058,17 +1061,22 @@ class AutoEncoder():
             pred_code.append(sweep_code)
 
         print ("Saving compression latent code")
-        with h5py.File(self.basedir+'code.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/code.h5', 'w', libver='latest') as f:
+            for idx, arr in enumerate(pred_code):
+                dset = f.create_dataset(str(idx), data=arr)
+
+        print ("Saving uncompression points")
+        with h5py.File(self.save_path+'/aux_code.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(pred_code):
                 dset = f.create_dataset(str(idx), data=arr)
 
         print ("Saving reconstruction")
-        with h5py.File(self.basedir+'recon.h5', 'w', libver='latest') as f:
-            for idx, arr in enumerate(pred_code):
+        with h5py.File(self.save_path+'/recon.h5', 'w', libver='latest') as f:
+            for idx, arr in enumerate(pred_all):
                 dset = f.create_dataset(str(idx), data=arr)
                         
         print ("Saving ground truth")
-        with h5py.File(self.basedir+'orig.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/orig.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(orig_all):
                 dset = f.create_dataset(str(idx), data=arr)
 
@@ -1111,7 +1119,7 @@ class StackAutoEncoder(AutoEncoder):
 
             return tf.matmul(x_reconstr, rotate_matrix)
         else:
-            return x_reconstr
+            return x_reconstr, combined_code
 
     def _fuse(self, code):
         code = tf.expand_dims(code, -2)
@@ -1153,6 +1161,7 @@ class StackAutoEncoder(AutoEncoder):
             optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
 
             tower_grads = []
+            latent_gpu = []
             pred_gpu = []
             total_emd_loss, total_chamfer_loss = [], []
             for i in range(self.num_gpus):
@@ -1162,7 +1171,7 @@ class StackAutoEncoder(AutoEncoder):
                         meta_batch = [tf.slice(layer_meta, [i*self.device_batch_size], [self.device_batch_size]) for layer_meta in self.meta]
                         mask_batch = [tf.slice(layer_mask, [i*self.device_batch_size,0,0], [self.device_batch_size,-1,-1]) for layer_mask in self.mask]
 
-                        x_reconstr = self._ae(pc_batch, mask_batch, bn_decay)
+                        x_reconstr, code = self._ae(pc_batch, mask_batch, bn_decay)
 
                         match = approx_match(pc_batch[0], x_reconstr)
                         emd_loss = tf.reduce_mean(match_cost(pc_batch[0], x_reconstr, match))
@@ -1179,10 +1188,12 @@ class StackAutoEncoder(AutoEncoder):
                         grads = optimizer.compute_gradients(reconstruction_loss)
                         tower_grads.append(grads)
                         pred_gpu.append(x_reconstr)
+                        latent_gpu.append(code)
                         total_emd_loss.append(emd_loss)
                         total_chamfer_loss.append(chamfer_loss)
                         
             self.x_reconstr = tf.concat(pred_gpu, 0)
+            self.latent_code = tf.concat(latent_gpu, 0)
             self.emd_loss = tf.reduce_mean(total_emd_loss)
             self.chamfer_loss = tf.reduce_mean(total_chamfer_loss)
             grads = average_gradients(tower_grads)
