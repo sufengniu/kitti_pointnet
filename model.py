@@ -1008,6 +1008,7 @@ class AutoEncoder():
 
     def compress_sweep(self, point_cell, num_points, level_idx=0):
         all_sweep = point_cell.train_cleaned_velo + point_cell.test_cleaned_velo
+        print ("\Partitioning...\n")
         points = (point_cell.partition_batch(all_sweep, permutation=False))[0]
         if self.range_view == False:
             sweep_size = self.L[level_idx] * self.W[level_idx]
@@ -1015,6 +1016,7 @@ class AutoEncoder():
             sweep_size = point_cell.image_height * point_cell.image_width
 
         pred_code = []
+        residual_code = []
         pred_all = []
         orig_all = []
         print ("\nCompression...\n")
@@ -1059,6 +1061,7 @@ class AutoEncoder():
             pred_all.append(np.concatenate([pred_points, orig_points], axis=0))
             orig_all.append(orig_sweep)
             pred_code.append(sweep_code)
+            residual_code.append(orig_points)
 
         print ("Saving compression latent code")
         with h5py.File(self.save_path+'/code.h5', 'w', libver='latest') as f:
@@ -1067,7 +1070,7 @@ class AutoEncoder():
 
         print ("Saving uncompression points")
         with h5py.File(self.save_path+'/aux_code.h5', 'w', libver='latest') as f:
-            for idx, arr in enumerate(pred_code):
+            for idx, arr in enumerate(residual_code):
                 dset = f.create_dataset(str(idx), data=arr)
 
         print ("Saving reconstruction")

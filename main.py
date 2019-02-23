@@ -9,8 +9,8 @@ import tensorflow as tf
 import os
 import os.path as osp
 
-# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 from model import AutoEncoder, StackAutoEncoder
@@ -80,7 +80,7 @@ tf.flags.DEFINE_boolean("stacked", False,
                        "if it is multi-scale or not")
 tf.flags.DEFINE_boolean("training", False, 
                        "whether it is train or evaluation")
-tf.flags.DEFINE_boolean("compress", True, 
+tf.flags.DEFINE_boolean("compress", False, 
                        "whether it compress or not")
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 tf.flags.DEFINE_integer("num_epochs", 280,

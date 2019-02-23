@@ -509,7 +509,7 @@ def corr_plot(df):
     plt.show()
 
 class LoadData():
-    def __init__(self, args, train_drives, test_drives):
+    def __init__(self, args, train_drives, test_drives, eval_compress=False):
         
         self.batch_size = args.batch_size
         self.batch_idx = 0
@@ -527,7 +527,7 @@ class LoadData():
         self.latent_dim = args.latent_dim
         self.range_view = True if args.partition_mode == 'range' else False
         self.num_sample_points = 5000
-        self.load_all_kitti = True
+        self.load_all_kitti = (eval_compress==True)
 
         self.num_hdmap_test = 1
         self.lower_min_elevate_angle = -24.33
@@ -653,10 +653,15 @@ class LoadData():
                 dataset = load_dataset(args.date, drive, self.basedir)
                 self.data_id += [args.date + '_' + drive]
                 data_len = len(list(dataset.velo))
-                Idx = random.sample(range(data_len), self.num_to_select)
-                self.test_dataset_gray += [list(dataset.gray)[i] for i in Idx]
-                self.test_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
-                self.test_dataset_velo += [list(dataset.velo)[i] for i in Idx]
+                if self.load_all_kitti == False:
+                    Idx = random.sample(range(data_len), self.num_to_select)
+                    self.test_dataset_gray += [list(dataset.gray)[i] for i in Idx]
+                    self.test_dataset_rgb += [list(dataset.rgb)[i] for i in Idx]
+                    self.test_dataset_velo += [list(dataset.velo)[i] for i in Idx]
+                else:
+                    self.test_dataset_gray += list(dataset.gray)
+                    self.test_dataset_rgb += list(dataset.rgb)
+                    self.test_dataset_velo += list(dataset.velo)
 
             self.test_cleaned_velo = []
             for points in self.test_dataset_velo:
