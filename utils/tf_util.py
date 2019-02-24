@@ -13,7 +13,6 @@ from mpl_toolkits.mplot3d import Axes3D
 from transform_nets import *
 # from in_out import snc_category_to_synth_id, create_dir, PointCloudDataSet, load_all_point_clouds_under_folder
 
-
 def _variable_on_cpu(name, shape, initializer, use_fp16=False):
   """Helper to create a Variable stored on CPU memory.
   Args:
@@ -455,8 +454,7 @@ def avg_pool3d(inputs,
 #   """
 #   return tf.layers.batch_normalization(inputs, training=is_training)
 
-
-def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
+def batch_norm_template(inputs, is_training, scope, moments_dims_unused, bn_decay, data_format='NHWC'):
   """ Batch normalization on convolutional maps and beyond...
   Ref.: http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow
   
@@ -466,34 +464,56 @@ def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
       scope:         string, variable scope
       moments_dims:  a list of ints, indicating dimensions for moments calculation
       bn_decay:      float or float tensor variable, controling moving average weight
+      data_format:   'NHWC' or 'NCHW'
   Return:
       normed:        batch-normalized maps
   """
-  with tf.variable_scope(scope) as sc:
-    num_channels = inputs.get_shape()[-1].value
-    beta = tf.Variable(tf.constant(0.0, shape=[num_channels]),
-                       name='beta', trainable=True)
-    gamma = tf.Variable(tf.constant(1.0, shape=[num_channels]),
-                        name='gamma', trainable=True)
-    batch_mean, batch_var = tf.nn.moments(inputs, moments_dims, name='moments')
-    decay = bn_decay if bn_decay is not None else 0.9
-    ema = tf.train.ExponentialMovingAverage(decay=decay)
-    # Operator that maintains moving averages of variables.
-    ema_apply_op = tf.cond(is_training,
-                           lambda: ema.apply([batch_mean, batch_var]),
-                           lambda: tf.no_op())
+  bn_decay = bn_decay if bn_decay is not None else 0.9
+  return tf.contrib.layers.batch_norm(inputs, 
+                                      center=True, scale=True,
+                                      is_training=is_training, decay=bn_decay,updates_collections=None,
+                                      #variables_collections=["batch_norm_non_trainable_variables_collection"],
+                                      scope=scope,
+                                      data_format=data_format)
+  
+# def batch_norm_template(inputs, is_training, scope, moments_dims, bn_decay):
+#   """ Batch normalization on convolutional maps and beyond...
+#   Ref.: http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow
+  
+#   Args:
+#       inputs:        Tensor, k-D input ... x C could be BC or BHWC or BDHWC
+#       is_training:   boolean tf.Varialbe, true indicates training phase
+#       scope:         string, variable scope
+#       moments_dims:  a list of ints, indicating dimensions for moments calculation
+#       bn_decay:      float or float tensor variable, controling moving average weight
+#   Return:
+#       normed:        batch-normalized maps
+#   """
+#   with tf.variable_scope(scope) as sc:
+#     num_channels = inputs.get_shape()[-1].value
+#     beta = tf.Variable(tf.constant(0.0, shape=[num_channels]),
+#                        name='beta', trainable=True)
+#     gamma = tf.Variable(tf.constant(1.0, shape=[num_channels]),
+#                         name='gamma', trainable=True)
+#     batch_mean, batch_var = tf.nn.moments(inputs, moments_dims, name='moments')
+#     decay = bn_decay if bn_decay is not None else 0.9
+#     ema = tf.train.ExponentialMovingAverage(decay=decay)
+#     # Operator that maintains moving averages of variables.
+#     ema_apply_op = tf.cond(is_training,
+#                            lambda: ema.apply([batch_mean, batch_var]),
+#                            lambda: tf.no_op())
     
-    # Update moving average and return current batch's avg and var.
-    def mean_var_with_update():
-      with tf.control_dependencies([ema_apply_op]):
-        return tf.identity(batch_mean), tf.identity(batch_var)
+#     # Update moving average and return current batch's avg and var.
+#     def mean_var_with_update():
+#       with tf.control_dependencies([ema_apply_op]):
+#         return tf.identity(batch_mean), tf.identity(batch_var)
     
-    # ema.average returns the Variable holding the average of var.
-    mean, var = tf.cond(is_training,
-                        mean_var_with_update,
-                        lambda: (ema.average(batch_mean), ema.average(batch_var)))
-    normed = tf.nn.batch_normalization(inputs, mean, var, beta, gamma, 1e-3)
-  return normed
+#     # ema.average returns the Variable holding the average of var.
+#     mean, var = tf.cond(is_training,
+#                         mean_var_with_update,
+#                         lambda: (ema.average(batch_mean), ema.average(batch_var)))
+#     normed = tf.nn.batch_normalization(inputs, mean, var, beta, gamma, 1e-3)
+#   return normed
 
 
 def batch_norm_for_fc(inputs, is_training, scope, bn_decay):
@@ -628,7 +648,7 @@ def prelu(x, name='prelu', ref=False):
         else:
             return pos + neg
 
-def get_node_feature(point_cloud, nn_idx, k=20):
+def get_edge_feature(point_cloud, nn_idx, k=20):
   """Construct edge feature for each point
   Args:
     point_cloud: (batch_size, num_points, 1, num_dims)
@@ -658,46 +678,29 @@ def get_node_feature(point_cloud, nn_idx, k=20):
   
   node_feature = point_cloud_neighbors
   node_feature = tf.reshape(node_feature, [-1, num_points, k, num_dims])
-
-  return node_feature
-
-
-def get_edge_feature(point_cloud, nn_idx, k=20):
-  """Construct edge feature for each point
-  Args:
-    point_cloud: (batch_size, num_points, 1, num_dims)
-    nn_idx: (batch_size, num_points, k)
-    k: int
-
-  Returns:
-    edge features: (batch_size, num_points, k, num_dims)
-  """
-  # og_batch_size = point_cloud.get_shape().as_list()[0]
-  # point_cloud = tf.squeeze(point_cloud)
-  # if og_batch_size == 1:
-  #   point_cloud = tf.expand_dims(point_cloud, 0)
-
-  point_cloud_central = point_cloud
-
-  point_cloud_shape = point_cloud.get_shape()
-  batch_size = tf.shape(point_cloud)[0]
-  num_points = point_cloud_shape[1].value
-  num_dims = point_cloud_shape[2].value
-
-  idx_ = tf.range(batch_size) * num_points
-  idx_ = tf.reshape(idx_, [batch_size, 1, 1]) 
-
-  point_cloud_flat = tf.reshape(point_cloud, [-1, num_dims])
-  point_cloud_neighbors = tf.gather(point_cloud_flat, nn_idx+idx_)
+  
   point_cloud_central = tf.expand_dims(point_cloud_central, axis=-2)
-
   point_cloud_central = tf.tile(point_cloud_central, [1, 1, k, 1])
   
   edge_feature = tf.concat([point_cloud_central, point_cloud_neighbors], axis=-1)
   edge_feature = tf.reshape(edge_feature, [-1, num_points, k, 2*num_dims])
 
-  return edge_feature
+  return edge_feature, node_feature
 
+def conv_layer(self, x, training, filters, name):
+    with tf.name_scope(name):
+        x = self.batch_norm(x, training, name=name+'_bn')
+        x = tf.nn.relu(x, name=name+'_relu')
+        x = tf.layers.conv2d(x,
+                             filters=filters,
+                             kernel_size=[3, 3],
+                             strides=[1, 1],
+                             padding='SAME',
+                             dilation_rate=[1, 1],
+                             activation=None,
+                             kernel_initializer=tf.contrib.layers.xavier_initializer(),
+                             name=name+'_conv3x3')
+        x = tf.layers.dropout(x, rate=0.2, training=training, name=name+'_dropout')
 
 def neighbor_conv(input_image, name, is_training, n_filters=10, activation_function=tf.nn.relu, bn_decay=None):
    net = conv2d(input_image, n_filters, [1,1],
@@ -711,7 +714,7 @@ def neighbor_conv(input_image, name, is_training, n_filters=10, activation_funct
 
    return net
 
-def fully_connected_decoder(net, num_points, is_training):
+def fully_connected_decoder(net, num_points, is_training, bn_decay=None):
 
    # batch_size = tf.shape(net)[0]
 
@@ -720,33 +723,31 @@ def fully_connected_decoder(net, num_points, is_training):
 
    net = fully_connected(net, 256, scope='fc1', bn=True,
                       is_training=is_training,
+                      bn_decay=bn_decay,
                       activation_fn=tf.nn.relu)
    net = fully_connected(net, 256, scope='fc2', bn=True,   
                       is_training=is_training,
+                      bn_decay=bn_decay,
                       activation_fn=tf.nn.relu)
    net = fully_connected(net, num_points*3, scope='fc3', bn=True,  
                       is_training=is_training,
+                      bn_decay=bn_decay,
                       activation_fn=tf.nn.tanh)
 
    net = tf.reshape(net, [-1, num_points, 3])
 
    return net
 
-def point_conv(input_image, is_training, n_filters=[10], activation_function=tf.nn.relu, transform=False, name=None):
+def point_conv(input_image, is_training, n_filters=[10], bn_decay=None, activation_function=tf.nn.relu, name=None):
     
-    if transform == True:
-      with tf.variable_scope('transform_net1') as sc:
-        transform = input_transform_net(input_image, is_training, bn_decay, K=3)
-      point_cloud = tf.matmul(input_image, transform)
-    else:
-      point_cloud = input_image
-
+    point_cloud = input_image
     net = tf.expand_dims(point_cloud, -2)
     for idx, n_filter in enumerate(n_filters):
       net = conv2d(net, n_filter, [1,1],
                    padding='VALID', stride=[1,1],
                    activation_fn=activation_function,
                    bn=True, is_training=is_training,
+                   bn_decay=bn_decay,
                    scope=name+'_'+str(idx))
     net = tf.squeeze(net, -2)
 
@@ -758,21 +759,70 @@ def point_iteration(input, state, lstm):
         transposed_out, new_state = tf.map_fn(lambda x: lstm(x[0], x[1]), (transposed_in, state), dtype=(tf.float32, tf.float32))
         return tf.transpose(transposed_out, [1,0,2]), new_state
 
-def magic_conv(input_image, is_training, n_filter, k, bn_decay=None, iterative=False, step=3, name=None):
-    batch_size = tf.shape(input_image)[0]
-    num_points = tf.shape(input_image)[1]
+def magic(point_cloud, is_training, n_filters, k, bn_decay=None, iterative=False, step=3):
 
-    x = magic_block(input_image, is_training, n_filter, k, bn_decay=bn_decay, name_scope=name+'_input')
+    net = tf_util.magic_conv(point_cloud,
+                             is_training=is_training,
+                             n_filters=n_filters[0],
+                             k=k,
+                             bn_decay=bn_decay,
+                             iterative=iterative,
+                             step=step,
+                             name='magic1')
+    net1 = tf.expand_dims(net, -2)
+
+    net = tf_util.magic_conv(net,
+                             is_training=is_training,
+                             n_filters=n_filters[1],
+                             k=k,
+                             bn_decay=bn_decay,
+                             iterative=iterative,
+                             step=step,
+                             name='magic2')
+    net2 = tf.expand_dims(net, -2)
+
+    net = tf_util.magic_conv(net,
+                             is_training=is_training,
+                             n_filters=n_filters[2],
+                             k=k,
+                             bn_decay=bn_decay,
+                             iterative=iterative,
+                             step=step,
+                             name='magic3')
+    net3 = tf.expand_dims(net, -2)
+
+    net = tf_util.magic_conv(net,
+                             is_training=is_training,
+                             n_filters=n_filters[3],
+                             k=k,
+                             bn_decay=bn_decay,
+                             iterative=iterative,
+                             step=step,
+                             name='magic4')
+    net4 = tf.expand_dims(net, -2)
+
+    net = tf_util.conv2d(tf.concat([net1, net2, net3, net4], axis=-1),
+                         n_filters[4], [1,1], padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         scope='agg', bn_decay=bn_decay)
+    net = tf.squeeze(net, -2)
+    return net
+
+def magic_conv(point_cloud, is_training, n_filters, k, bn_decay=None, iterative=False, step=3, name=None):
+    batch_size = tf.shape(point_cloud)[0]
+    num_points = tf.shape(point_cloud)[1]
+
+    x = magic_block(point_cloud, is_training, n_filters, k, bn_decay=bn_decay, name_scope=name+'_input')
     if iterative == True:
         lstm_in = x
-        lstm = tf.nn.rnn_cell.LSTMCell(n_filter, state_is_tuple=False, name=name+'_lstm')
+        lstm = tf.nn.rnn_cell.LSTMCell(n_filters[-1], state_is_tuple=False, name=name+'_lstm')
         # state = lstm.zero_state(batch_size, tf.float32)
         state = tf.tile(tf.expand_dims(lstm.zero_state(batch_size, tf.float32), 0), [1024, 1, 1])
 
         for t in range(step):
-            x_t = magic_block(lstm_in, is_training, n_filter, k, bn_decay=bn_decay, name_scope=name+'_iter')
-            # TODO: testing if we need to concat input_image every iteration
-            # out, state = point_iteration(tf.concat([x_t, input_image], axis=-1), state, lstm)
+            x_t = magic_block(lstm_in, is_training, n_filters, k, bn_decay=bn_decay, name_scope=name+'_input')
+            # TODO: testing if we need to concat point_cloud every iteration
+            # out, state = point_iteration(tf.concat([x_t, point_cloud], axis=-1), state, lstm)
             out, state = point_iteration(x_t, state, lstm)
             lstm_in = out
     else:
@@ -784,20 +834,138 @@ def magic_block(point_cloud, is_training, n_filter, k, bn_decay=None, name_scope
         adj_matrix = pairwise_distance(point_cloud)
         nn_idx = knn(adj_matrix, k=k)
 
-        edge_feature = get_edge_feature(point_cloud, nn_idx=nn_idx, k=k)
-        node_feature = get_node_feature(point_cloud, nn_idx=nn_idx, k=k)
-        node_feature = tf.layers.dense(inputs=node_feature, units=n_filter, activation=None, 
-                                       kernel_initializer=tf.contrib.layers.xavier_initializer())
+        edge_feature, node_feature = get_edge_feature(point_cloud, nn_idx=nn_idx, k=k)
+
+        node_net = node_feature
+        node_net = conv2d(node_net, n_filter, [1,1],
+                          padding='VALID', stride=[1,1],
+                          activation_fn=tf.nn.relu,
+                          bn=True, bn_decay=bn_decay, 
+                          is_training=is_training,
+                          scope=name_scope)
 
         edge_net = conv2d(edge_feature, 1, [1,1],
                           padding='VALID', stride=[1,1],
-                          activation_fn=None,
+                          activation_fn=tf.nn.relu,
                           bn=True, bn_decay=bn_decay, 
                           is_training=is_training,
                           scope=name_scope+'_'+'edge')
         alpha = tf.nn.softmax(prelu(edge_net, name='prelu_edge_att'), axis=-2)
 
-    return tf.reduce_mean(alpha * node_feature, axis=-2)
+    return tf.reduce_mean(alpha * node_net, axis=-2)
+
+
+def dgcnn_path(edge_feature, n_filters, is_training, bn_decay, activation_function, name_scope):
+    # net: [batch_size, num_points, feature_dims]
+    with tf.variable_scope(name_scope, reuse=tf.AUTO_REUSE):
+        #layer_net = []
+        for idx, n_filter in enumerate(n_filters):
+            net = conv2d(edge_feature, n_filter, [1,1],
+                         padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         activation_function=activation_function, 
+                         scope='dgcnn_'+str(idx), bn_decay=bn_decay)
+            net = tf.reduce_max(net, axis=-2, keepdims=True)
+            edge_feature = net
+            #layer_net.append(net)
+
+    return tf.squeeze(net, -2)#, tf.concat(layer_net, axis=-1)
+
+def dgcnn_block(net, max_k, is_training, n_filters, bn_decay, activation_function, name_scope):
+    adj_matrix = pairwise_distance(net)
+    nn_idx = knn(adj_matrix, k=max_k)
+    edge_feature, _ = get_edge_feature(net, nn_idx=nn_idx, k=max_k)
+
+    # net_40 = dgcnn_path(edge_feature[:,:,:max_k,:], n_filters, is_training=is_training, bn_decay=bn_decay, name_scope=name_scope+'_scale_40')
+    # net_20 = dgcnn_path(edge_feature[:,:,:8,:], n_filters, is_training=is_training, bn_decay=bn_decay, name_scope=name_scope+'_scale_20')
+    # net_1 = dgcnn_path(edge_feature[:,:,:1,:], n_filters, is_training=is_training, bn_decay=bn_decay, name_scope=name_scope+'_scale_1')
+
+    # return tf.concat([net_40, net_20, net_1], axis=-1)
+    net_40 = dgcnn_path(edge_feature[:,:,:max_k,:], n_filters, is_training=is_training, bn_decay=bn_decay, activation_function=activation_function, name_scope=name_scope+'_scale_40')
+    net_20 = dgcnn_path(edge_feature[:,:,:int(max_k/2),:], n_filters, is_training=is_training, bn_decay=bn_decay, activation_function=activation_function, name_scope=name_scope+'_scale_20')
+    net_10 = dgcnn_path(edge_feature[:,:,:int(max_k/4),:], n_filters, is_training=is_training, bn_decay=bn_decay, activation_function=activation_function, name_scope=name_scope+'_scale_10')
+    net_1 = dgcnn_path(edge_feature[:,:,:1,:], n_filters, is_training=is_training, bn_decay=bn_decay, activation_function=activation_function, name_scope=name_scope+'_scale_1')
+
+    return tf.concat([net_40, net_20, net_10, net_1], axis=-1)
+    # return net_40+net_20+net_10+net_1
+
+def inception_dgcnn(point_cloud, is_training, n_filters, max_k, activation_function=tf.nn.relu, bn_decay=None):
+    net1 = dgcnn_block(point_cloud, max_k, is_training, [64, 64], bn_decay, activation_function, 'block1')
+
+    net2 = dgcnn_block(net1, max_k, is_training, [64, 128], bn_decay, activation_function, 'block2')
+
+    net1, net2 = tf.expand_dims(net1, axis=-2), tf.expand_dims(net2, axis=-2)
+    net = tf_util.conv2d(tf.concat([net1, net2], axis=-1), n_filters[-1], [1, 1], 
+                         padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         activation_function=activation_function,
+                         scope='agg', bn_decay=bn_decay)
+    return tf.squeeze(net, -2)
+
+def dgcnn(point_cloud, is_training, n_filters, k, activation_function=tf.nn.relu, bn_decay=None):
+
+    adj_matrix = pairwise_distance(point_cloud)
+    nn_idx = knn(adj_matrix, k=k)
+    edge_feature, _ = get_edge_feature(point_cloud, nn_idx=nn_idx, k=k)
+
+    # with tf.variable_scope('transform_net1') as sc:
+    #     transform = input_transform_net_edge(edge_feature, is_training, bn_decay, K=3)
+
+    # point_cloud_transformed = tf.matmul(point_cloud, transform)
+    # adj_matrix = pairwise_distance(point_cloud_transformed)  
+    # nn_idx = knn(adj_matrix, k=k)
+    # edge_feature, _ = get_edge_feature(point_cloud_transformed, nn_idx=nn_idx, k=k)
+
+    net = conv2d(edge_feature, n_filters[0], [1,1],
+                         padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         activation_function=activation_function,
+                         scope='dgcnn1', bn_decay=bn_decay)
+    net1 = tf.reduce_max(net, axis=-2, keepdims=True)
+    net = tf.squeeze(net1, -2)
+
+    adj_matrix = pairwise_distance(net)
+    nn_idx = knn(adj_matrix, k=k)
+    edge_feature, _ = get_edge_feature(net, nn_idx=nn_idx, k=k)
+
+    net = conv2d(edge_feature, n_filters[1], [1,1],
+                         padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         activation_function=activation_function,
+                         scope='dgcnn2', bn_decay=bn_decay)
+    net2 = tf.reduce_max(net, axis=-2, keepdims=True)
+    net = tf.squeeze(net2, -2)
+   
+    adj_matrix = pairwise_distance(net)
+    nn_idx = knn(adj_matrix, k=k)
+    edge_feature, _ = get_edge_feature(net, nn_idx=nn_idx, k=k)  
+
+    net = conv2d(edge_feature, n_filters[2], [1,1],
+                         padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         activation_function=activation_function,
+                         scope='dgcnn3', bn_decay=bn_decay)
+    net3 = tf.reduce_max(net, axis=-2, keepdims=True)
+    net = tf.squeeze(net3, -2)
+
+    adj_matrix = pairwise_distance(net)
+    nn_idx = knn(adj_matrix, k=k)
+    edge_feature, _ = get_edge_feature(net, nn_idx=nn_idx, k=k)  
+    
+    net = conv2d(edge_feature, n_filters[3], [1,1],
+                         padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         activation_function=activation_function,
+                         scope='dgcnn4', bn_decay=bn_decay)
+    net4 = tf.reduce_max(net, axis=-2, keepdims=True)
+    
+    net = conv2d(tf.concat([net1, net2, net3, net4], axis=-1), n_filters[4], [1, 1], 
+                         padding='VALID', stride=[1,1],
+                         bn=True, is_training=is_training,
+                         activation_function=activation_function,
+                         scope='agg', bn_decay=bn_decay)
+    net = tf.squeeze(net, -2)
+    return net
 
 def generate_bar(num_points):
     A = 0.5
