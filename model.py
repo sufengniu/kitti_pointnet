@@ -621,7 +621,7 @@ class AutoEncoder():
             sweep_compress, compress_meta, sweep_orig, orig_meta = self.extract_sweep(points, s, e, level_idx)
             gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
             orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
-            import numpy as np
+
             orig_all = np.concatenate([gt_points, orig_points], axis=0)
 
             compress_nums = compress_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
@@ -726,8 +726,6 @@ class AutoEncoder():
                                                          np.array(save_var_part).mean(), 
                                                          np.array(save_mse_part).mean()))
 
-
-        import numpy as np
         emd_all = ['emd_all', np.array(save_emd_all).mean()]
         chamfer_all = ['chamfer_all', np.array(save_chamfer_all).mean()]
         mean_all = ['mean_all', np.array(save_mean_all).mean()]
@@ -1454,3 +1452,4 @@ class StackAutoEncoder(AutoEncoder):
 
         return parent_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
+                                                            
