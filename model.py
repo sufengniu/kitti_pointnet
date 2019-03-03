@@ -21,7 +21,7 @@ import h5py
 
 from external.structural_losses.tf_nndistance import nn_distance
 from external.structural_losses.tf_approxmatch import approx_match, match_cost
-
+import time
 
 def average_gradients(tower_grads):
     """Calculate the average gradient for each shared variable across all towers.
@@ -67,13 +67,16 @@ class AutoEncoder():
         self.latent_dim = FLAGS.latent_dim
         self.num_gpus = FLAGS.num_gpus
         self.num_epochs = FLAGS.num_epochs
+        self.start_epochs = int(FLAGS.checkpoint_number) if FLAGS.checkpoint_number is not None else 0
         self.save_freq = FLAGS.save_freq
         self.save_path = FLAGS.save_path
+        self.result_output_path = FLAGS.result_output_path if FLAGS.result_output_path is not None else self.save_path
         self.fb_split = FLAGS.fb_split
         self.L = list(map(int, FLAGS.PL.split(',')))
         self.W = list(map(int, FLAGS.PL.split(',')))
         self.level = len(self.L)
         self.dataset = FLAGS.dataset
+        self.load_prestored_data = FLAGS.load_prestored_data
 
         self.range_view = True if FLAGS.partition_mode == 'range' else False
         self.learning_rate = FLAGS.learning_rate
@@ -167,7 +170,6 @@ class AutoEncoder():
                 net = tf_util.point_conv(all_code, 
                                          self.is_training, 
                                          n_filters=[256, 128], 
-                                         # n_filters=[256, 128, 64], 
                                          bn_decay=bn_decay,
                                          activation_function=tf.nn.relu,
                                          name="decoder1")
@@ -366,6 +368,8 @@ class AutoEncoder():
             current_meta = train_meta[train_idx]
 
             record_mean, record_var, record_mse = [], [], []
+
+            start = time.time()
             for batch_idx in range(num_batches):
                 start_idx = batch_idx * self.batch_size
                 end_idx = (batch_idx+1) * self.batch_size
@@ -397,6 +401,9 @@ class AutoEncoder():
                                                                        np.array(record_var).mean(), 
                                                                        np.array(record_mse).mean(),
                                                                        compression_ratio))
+            end = time.time()
+            print("epoch: {}, elapsed time: {}".format(epoch, end - start))
+
             if epoch % self.save_freq == 0:
                 if self.fb_split == True:
                     ckpt_name = osp.join(ckpt_path, 'model-%s-%s.ckpt' % (mode, str(epoch)))
@@ -482,26 +489,6 @@ class AutoEncoder():
 
         # check testing accuracy
         self.evaluate(test_point, test_meta, ckpt_path, test=True)
-
-        # test_emd_loss, test_chamfer_loss = [], []
-        # i = 0
-        # for i in range(len(test_point)//self.batch_size):
-        #     test_s, test_e = i*self.batch_size, (i+1)*self.batch_size
-        #     feed_dict = {self.pc: test_point[test_s:test_e],
-        #                  self.meta: test_meta[test_s:test_e],
-        #                  self.is_training: False}
-        #     vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
-        #     test_emd_loss.append(vel)
-        #     test_chamfer_loss.append(vcl)
-
-        # feed_dict = {self.pc: test_point[i*self.batch_size:],
-        #              self.meta: test_meta[i*self.batch_size:], 
-        #              self.is_training: False}
-        # vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
-        # test_emd_loss.append(vel)
-        # test_chamfer_loss.append(vcl)
-        # print ('testing emd loss: {}, validation chamfer loss: {}'.format(np.array(test_emd_loss).mean(),
-        #                                                                      np.array(test_chamfer_loss).mean()))
 
     def train_image(self, point_cell):
         '''
@@ -634,6 +621,7 @@ class AutoEncoder():
             sweep_compress, compress_meta, sweep_orig, orig_meta = self.extract_sweep(points, s, e, level_idx)
             gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
             orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
+            import numpy as np
             orig_all = np.concatenate([gt_points, orig_points], axis=0)
 
             compress_nums = compress_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
@@ -737,6 +725,24 @@ class AutoEncoder():
             print ('mean: %.6f, var: %.6f, mse: %.6f' % (np.array(save_mean_part).mean(), 
                                                          np.array(save_var_part).mean(), 
                                                          np.array(save_mse_part).mean()))
+
+
+        import numpy as np
+        emd_all = ['emd_all', np.array(save_emd_all).mean()]
+        chamfer_all = ['chamfer_all', np.array(save_chamfer_all).mean()]
+        mean_all = ['mean_all', np.array(save_mean_all).mean()]
+        var_all = ['var_all', np.array(save_var_all).mean()]
+        mse_all = ['mse_all', np.array(save_mse_all).mean()]
+        emd_part = ['emd_part', np.array(save_emd_part).mean()]
+        chamfer_part = ['chamfer_part', np.array(save_chamfer_part).mean()]
+        mean_part = ['mean_part', np.array(save_mean_part).mean()]
+        var_part = ['var_part', np.array(save_var_part).mean()]
+        mse_part = ['mse_part', np.array(save_mse_part).mean()]
+
+        print("self.result_output_path: {}".format(self.result_output_path))
+        np.savetxt(self.result_output_path + '/result.csv', (emd_all, chamfer_all, mean_all, var_all, mse_all, emd_part, chamfer_part, mean_part, var_part, mse_part), delimiter=',', fmt='%s')
+
+
 
     def plot_hdmap(self, point_cell, center, ckpt_name, mode, num_points=6, level_idx=0):
         '''
@@ -982,17 +988,6 @@ class AutoEncoder():
         point_reconstr, reconstr_loss = self.sess.run([self.x_reconstr, self.reconstruction_loss], feed_dict)
         return point_reconstr
 
-    # def compress_cell(self, pc_data):
-    #     '''
-    #     compress a batch of cell
-    #     '''
-        
-
-    # def reconstruct_cell(self, ):
-    #     '''
-    #     reconstruct a batch of cell
-    #     '''
-
     def compress(self, point_cell, ckpt_name):
         '''
         compress one entire sweep data
@@ -1234,6 +1229,8 @@ class StackAutoEncoder(AutoEncoder):
             current_meta = train_meta[train_idx]
 
             record_mean, record_var, record_mse = [], [], []
+
+            start = time.time()
             for batch_idx in range(num_batches):
                 start_idx = batch_idx * self.batch_size
                 end_idx = (batch_idx+1) * self.batch_size
@@ -1269,6 +1266,9 @@ class StackAutoEncoder(AutoEncoder):
                                                                        np.array(record_var).mean(), 
                                                                        np.array(record_mse).mean(),
                                                                        compression_ratio))
+
+            end = time.time()
+            print("epoch: {}, elapsed time: {}".format(epoch, end - start))
 
             if epoch % self.save_freq == 0:
                 ckpt_path = util.create_dir(osp.join(self.save_path, 'level_1'))

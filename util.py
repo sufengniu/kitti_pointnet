@@ -26,7 +26,7 @@ from scipy import ndimage
 from scipy.sparse import coo_matrix
 
 from source.utilities import print_progress
-from moviepy.editor import ImageSequenceClip
+# from moviepy.editor import ImageSequenceClip
 
 from sklearn import linear_model, datasets
 from sklearn.cluster import KMeans

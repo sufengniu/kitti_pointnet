@@ -25,6 +25,8 @@ FLAGS = tf.flags.FLAGS
 # Training options.
 tf.flags.DEFINE_string("save_path", "/scratch1/sniu/pc/test/",
                        "Checkpointing directory.")
+tf.flags.DEFINE_string("result_output_path", None,
+                       "Checkpointing directory.")
 tf.flags.DEFINE_string("data_in_dir", "/scratch2/sniu/kitti/",
                        "data input dir")
 tf.flags.DEFINE_string("hdmap_dir", "/scratch2/sniu/hdmap/",
@@ -32,9 +34,15 @@ tf.flags.DEFINE_string("hdmap_dir", "/scratch2/sniu/hdmap/",
 tf.flags.DEFINE_string("date", "2011_09_26",
                        "which date to use")
 tf.flags.DEFINE_string("weights", "model-260.ckpt",
-                       "which date to use")
+                       "which checkpoint to use")
 tf.flags.DEFINE_string("dataset", "kitti",
                        "which data to use [kitti|hdmap]")
+tf.flags.DEFINE_boolean("load_prestored_data", False, 
+                       "default setting is to compute online")
+tf.flags.DEFINE_string("checkpoint_path", None, 
+                       "a path that stores a pretrained model")
+tf.flags.DEFINE_string("checkpoint_number", None, 
+                       "number of epoch")
 
 # partition
 tf.flags.DEFINE_string("partition_mode", 'grid', 
@@ -92,44 +100,17 @@ tf.flags.DEFINE_integer("save_freq", 20,
 tf.flags.DEFINE_float("learning_rate", 0.001,
                       "learning rate")
 
-
 train_drives = ['0001', '0002', '0005', '0011', '0013', '0014', '0015', '0017', '0018', '0019',
                 '0020', '0022', '0023', '0027', '0028', '0029', '0032', '0035', '0036', '0039',
                 '0046', '0048', '0051', '0052', '0056', '0057', '0059', '0060', '0061', '0064',
                 '0070', '0079', '0084', '0052', '0056', '0057', '0059', '0060', '0061', '0064']
 test_drives = ['0101', '0104', '0106', '0113', '0117']
 
-# train_drives = ['0001']
-# test_drives = ['0005']
-# drives = ['0001']
-
-
-# def train():
-#     util.create_dir(FLAGS.save_path)
-
-#     # step 1 Partition
-#     point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
-
-#     level = len(list(map(int, FLAGS.PL.split(','))))
-#     print ('training grain from corase to fine')
-#     models = []
-#     for l in range(level):
-#         if FLAGS.fb_split == True:
-#             # step 2 compression
-#             model_f = AutoEncoder(FLAGS, l)
-#             model_f.train(point_cell, mode='foreground')
-#             # model_f.predict()
-            
-#             model_d = AutoEncoder(FLAGS, l)
-#             model_d.train(point_cell, mode='background')
-
-#         else:
-#             models.append(AutoEncoder(FLAGS, l))
-#             models[l].train(point_cell)
-
 
 def evaluate_sweep():
     util.create_dir(FLAGS.save_path)
+    if FLAGS.result_output_path is not None:
+      util.create_dir(FLAGS.result_output_path)
 
     # step 1 Partition
     point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
@@ -150,6 +131,14 @@ def evaluate_sweep():
         model.predict_test(point_cell, ckpt_name, FLAGS.mode)
         point_cell.test_compression_rate()
     
+def restore_model_from_checkpoint(model):
+    if FLAGS.checkpoint_path is not None and FLAGS.checkpoint_number is not None:
+        checkpoint = FLAGS.checkpoint_path + 'model-' + str(FLAGS.checkpoint_number) + '.ckpt'
+        model.saver.restore(model.sess, checkpoint)
+        print("Restore the checkpoint at: {}".format(checkpoint))
+    else:
+        print("Training from scratch!")
+
 
 def train():
     util.create_dir(FLAGS.save_path)
@@ -172,6 +161,7 @@ def train():
 
         else:
             model = StackAutoEncoder(FLAGS)
+            restore_model_from_checkpoint(model)
             model.train(point_cell)
 
     else:
@@ -187,6 +177,7 @@ def train():
 
         else:
             model = AutoEncoder(FLAGS)
+            restore_model_from_checkpoint(model)
             model.train(point_cell)
 
     point_cell.test_compression_rate()
@@ -213,23 +204,6 @@ def test():
     points = point_cell.train_cleaned_velo[i][p]
     util.visualize_3d_points(points, filename='test')
 
-    # measure emd distance
-    # x_reconstr, gt = tf.placeholder(tf.float32, [1, None, 3]), tf.placeholder(tf.float32, [1, None, 3])
-    # match = approx_match(x_reconstr, gt)
-    # emd_loss = tf.reduce_mean(match_cost(x_reconstr, gt, match))
-    # emd_max = tf.reduce_max(match_cost(x_reconstr, gt, match))
-    # emd_min = tf.reduce_min(match_cost(x_reconstr, gt, match))
-
-    # config = tf.ConfigProto(
-    #     device_count = {'GPU': 0}
-    # )
-    # sess = tf.Session(config=config)
-    # feed_dict = {x_reconstr: np.expand_dims(reconstruction, 0), 
-    #              gt: np.expand_dims(origin_points, 0)}
-    # loss_max, loss_min, loss = sess.run([emd_max, emd_min, emd_loss], feed_dict)
-    # print ("emd max loss: {}, emd min loss: {}, emd loss: {}".format(loss_max, loss_min, loss))
-    # # print ("emd loss: {}".format(sess.run([emd_loss], feed_dict)))
-
     reconstruction_sample = point_cell.reconstruct_scene(sample_generated, sample_info)
     util.visualize_3d_points(origin_points_sample, dir='.', filename='orig_sample')
     util.visualize_3d_points(reconstruction_sample, dir='.', filename='recon_sample')
@@ -243,5 +217,3 @@ if __name__ == '__main__':
         train()
     else:
         evaluate_sweep()
-    # else:
-        # test()
