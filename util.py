@@ -509,7 +509,7 @@ def corr_plot(df):
     plt.show()
 
 class LoadData():
-    def __init__(self, args, train_drives, test_drives, eval_compress=False):
+    def __init__(self, args, train_drives, test_drives):
         
         self.batch_size = args.batch_size
         self.batch_idx = 0
@@ -527,7 +527,7 @@ class LoadData():
         self.latent_dim = args.latent_dim
         self.range_view = True if args.partition_mode == 'range' else False
         self.num_sample_points = 5000
-        self.load_all_kitti = (eval_compress==True)
+        self.load_all_kitti = (args.all_kitti==True)
 
         self.num_hdmap_test = 1
         self.lower_min_elevate_angle = -24.33
@@ -540,7 +540,7 @@ class LoadData():
         self.image_width = 64 # can tune
         self.dataset = args.dataset
         
-        self.columns = ['points', 'parent', 'parent_nump', 'index', 'ratio',
+        self.columns = ['points', 'stacked', 'stacked_num', 'index', 'ratio',
                         'center', 'level', 'num_points', 'compressed', 'row', 'col']
         
         if self.level > 1:
@@ -675,6 +675,7 @@ class LoadData():
             with h5py.File(self.basedir+'testing.h5', 'w', libver='latest') as f:
                 for idx, arr in enumerate(self.test_cleaned_velo):
                     dset = f.create_dataset(str(idx), data=arr)
+        print ('loading data done, number of traininig set: %d, number of testing set %d'%(len(self.train_cleaned_velo), len(self.test_cleaned_velo)))
 
     def filter_hdmap(self):
 
@@ -839,12 +840,12 @@ class LoadData():
                         new_point[:num_points] = points[cell_idx]
                         cell, ratio, center = rescale(new_point, num_points)
 
-                    cell_points.iloc[cell_pos]['points'] = cell
-                    if k > 0:
-                        I, J = i//self.factor, j//self.factor
-                        parent_pos = int(I*self.W[k-1]+J)
-                        cell_points.iloc[cell_pos]['parent'] = multi_cell[-1].iloc[parent_pos]['points']
-                        cell_points.iloc[cell_pos]['parent_nump'] = multi_cell[-1].iloc[parent_pos]['num_points']
+                    cell_points.iloc[cell_pos]['points'] = cell.astype(np.float32)
+                    # if k > 0:
+                    #     I, J = i//self.factor, j//self.factor
+                    #     parent_pos = int(I*self.W[k-1]+J)
+                    #     cell_points.iloc[cell_pos]['stacked'] = multi_cell[-1].iloc[parent_pos]['points']
+                    #     cell_points.iloc[cell_pos]['stacked_num'] = multi_cell[-1].iloc[parent_pos]['num_points']
                     cell_points.iloc[cell_pos]['index'] = idx
                     cell_points.iloc[cell_pos]['ratio'] = ratio
                     cell_points.iloc[cell_pos]['center'] = center
@@ -852,6 +853,8 @@ class LoadData():
                     cell_points.iloc[cell_pos]['col'] = j
                     cell_points.iloc[cell_pos]['level'] = k
                     cell_points.iloc[cell_pos]['num_points'] = min(num_points, self.cell_max_points[k])
+                    cell_points.iloc[cell_pos]['stacked'] = cell.astype(np.float32)
+                    cell_points.iloc[cell_pos]['stacked_num'] = min(num_points, self.cell_max_points[k])
             multi_cell.append(cell_points)
 
         for k in range(self.level):
@@ -930,12 +933,12 @@ class LoadData():
                         new_point[:num_points] = points[cell_idx]
                         cell, ratio, center = rescale(new_point, num_points)
 
-                    if k > 0:
-                        I, J = i//self.factor, j//self.factor
-                        parent_pos = int(I*self.W[k-1]+J)
-                        cell_points.iloc[cell_pos]['parent'] = multi_cell[-1].iloc[parent_pos]['points']
-                        cell_points.iloc[cell_pos]['parent_nump'] = multi_cell[-1].iloc[parent_pos]['num_points']
-                    cell_points.iloc[cell_pos]['points'] = cell
+                    # if k > 0:
+                    #     I, J = i//self.factor, j//self.factor
+                    #     parent_pos = int(I*self.W[k-1]+J)
+                    #     cell_points.iloc[cell_pos]['stacked'] = multi_cell[-1].iloc[parent_pos]['points']
+                    #     cell_points.iloc[cell_pos]['stacked_num'] = multi_cell[-1].iloc[parent_pos]['num_points']
+                    cell_points.iloc[cell_pos]['points'] = cell.astype(np.float32)
                     cell_points.iloc[cell_pos]['row'] = i
                     cell_points.iloc[cell_pos]['col'] = j
                     cell_points.iloc[cell_pos]['index'] = idx
@@ -943,6 +946,9 @@ class LoadData():
                     cell_points.iloc[cell_pos]['center'] = center
                     cell_points.iloc[cell_pos]['level'] = k
                     cell_points.iloc[cell_pos]['num_points'] = min(num_points, self.cell_max_points[k])
+                    cell_points.iloc[cell_pos]['stacked'] = cell.astype(np.float32)
+                    cell_points.iloc[cell_pos]['stacked_num'] = min(num_points, self.cell_max_points[k])
+                    
             multi_cell.append(cell_points)
 
         for k in range(self.level):

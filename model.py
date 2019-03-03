@@ -97,6 +97,10 @@ class AutoEncoder():
         self.device_batch_size = int(self.batch_size / self.num_gpus)
         assert(self.batch_size % self.num_gpus == 0)
         self.num_sample_points = 1500
+        if FLAGS.mode != "encoder" and FLAGS.mode != "decoder":
+            self.nn_config = "autoencoder"
+        else:
+            self.nn_config = FLAGS.mode
 
         self.g = tf.Graph()
         self._build_cell(self.g)
@@ -462,17 +466,17 @@ class AutoEncoder():
                 
                 # plot
                 if self.fb_split == True:
-                    sample_points, sample_meta, orig_points, orig_meta = self.extract_point(point_cell.sample_points_f, level_idx)
+                    sample_points, sample_meta, _, orig_points, orig_meta, _ = self.extract_point(point_cell.sample_points_f, level_idx)
                     rf, sf = visualize_sample(sample_points, sample_meta, orig_points, orig_meta, 'foreground')
 
-                    sample_points, orig_points, orig_points, orig_meta = self.extract_point(point_cell.sample_points_b, level_idx)
+                    sample_points, orig_points, _, orig_points, orig_meta, _ = self.extract_point(point_cell.sample_points_b, level_idx)
                     rb, sb = visualize_sample(sample_points, sample_meta, orig_points, orig_meta, 'background')
                     reconstruction = np.concatenate([rf, rb], 0)
                     sweep = np.concatenate([sf, sb], 0)
                     util.visualize_3d_points(sweep, dir=ckpt_path, filename='orig_{}'.format(str(epoch)))
                     util.visualize_3d_points(reconstruction, dir=ckpt_path, filename='recon_{}'.format(str(epoch)))
                 else:
-                    sample_points, sample_meta, orig_points, orig_meta = self.extract_point(point_cell.sample_points, level_idx)
+                    sample_points, sample_meta, _, orig_points, orig_meta, _ = self.extract_point(point_cell.sample_points, level_idx)
                     visualize_sample(sample_points, sample_meta, orig_points, orig_meta)
                 
 
@@ -908,14 +912,16 @@ class AutoEncoder():
         sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['points'])
         sample_points = np.array(list(sample_points.squeeze()))
+        sample_num = sample_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         sample_meta = sample_points_df
 
         orig_points_df = level_points[(level_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
         orig_points = orig_points_df.as_matrix(columns=['points'])
         orig_points = np.array(list(orig_points.squeeze()))
+        orig_num = orig_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         orig_meta = orig_points_df
 
-        return sample_points, sample_meta, orig_points, orig_meta
+        return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
 
     def extract_point(self, points, level_idx=1):
@@ -923,34 +929,28 @@ class AutoEncoder():
         sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['points'])
         sample_points = np.array(list(sample_points.squeeze()))
+        sample_num = sample_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         sample_meta = sample_points_df
 
         orig_points_df = level_points[(level_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
         orig_points = orig_points_df.as_matrix(columns=['points'])
         orig_points = np.array(list(orig_points.squeeze()))
+        orig_num = orig_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         orig_meta = orig_points_df
 
-        return sample_points, sample_meta, orig_points, orig_meta
+        return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
     def preprocess(self, point_cell, level_idx, mode='foreground'):
         if self.fb_split == True:
             if mode == 'foreground':
-                train_point, train_meta, _, _ = self.extract_point(point_cell.train_cell_f, level_idx)
-                valid_point, valid_meta, _, _ = self.extract_point(point_cell.valid_cell_f, level_idx)
-                test_point, test_meta, _, _ = self.extract_point(point_cell.test_cell_f, level_idx)
-
-                train_num = train_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-                valid_num = valid_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-                test_num = test_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
+                train_point, train_meta, train_num, _, _, _ = self.extract_point(point_cell.train_cell_f, level_idx)
+                valid_point, valid_meta, valid_num, _, _, _ = self.extract_point(point_cell.valid_cell_f, level_idx)
+                test_point, test_meta, test_num, _, _, _ = self.extract_point(point_cell.test_cell_f, level_idx)
 
             elif mode == 'background':
-                train_point, train_meta, _, _ = self.extract_point(point_cell.train_cell_b, level_idx)
-                valid_point, valid_meta, _, _ = self.extract_point(point_cell.valid_cell_b, level_idx)
-                test_point, test_meta, _, _ = self.extract_point(point_cell.test_cell_b, level_idx)
-
-                train_num = train_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-                valid_num = valid_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-                test_num = test_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
+                train_point, train_meta, train_num, _, _, _ = self.extract_point(point_cell.train_cell_b, level_idx)
+                valid_point, valid_meta, valid_num, _, _, _ = self.extract_point(point_cell.valid_cell_b, level_idx)
+                test_point, test_meta, test_num, _, _, _ = self.extract_point(point_cell.test_cell_b, level_idx)
 
             else:
                 print ("unkonwn mode {}, should be either foreground or background!" % mode)
@@ -958,14 +958,10 @@ class AutoEncoder():
         else:
             train_cell, valid_cell = point_cell.partition(point_cell.train_cleaned_velo)
 
-            train_point, train_meta, _, _ = self.extract_point(train_cell, level_idx)
-            valid_point, valid_meta, _, _ = self.extract_point(valid_cell, level_idx)
-            test_point, test_meta, _, _ = self.extract_point(point_cell.test_cell, level_idx)
+            train_point, train_meta, train_num, _, _, _ = self.extract_point(train_cell, level_idx)
+            valid_point, valid_meta, valid_num, _, _, _ = self.extract_point(valid_cell, level_idx)
+            test_point, test_meta, test_num, _, _, _ = self.extract_point(point_cell.test_cell, level_idx)
     
-            train_num = train_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-            valid_num = valid_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-            test_num = test_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-
         return train_point, valid_point, test_point, train_num, valid_num, test_num
 
     def predict_test(self, point_cell, ckpt_name, mode):
@@ -1006,80 +1002,85 @@ class AutoEncoder():
         self.saver.restore(self.sess, os.path.join(ckpt_path, ckpt_name))
         self.compress_sweep(point_cell, num_points=(self.latent_dim//3))
 
-    def compress_sweep(self, point_cell, num_points, level_idx=0):
+    def compress_sweep(self, point_cell, num_points, level_idx=0, num_partition=4):
         all_sweep = point_cell.train_cleaned_velo + point_cell.test_cleaned_velo
-        print ("\Partitioning...\n")
-        points = (point_cell.partition_batch(all_sweep, permutation=False))[0]
-        if self.range_view == False:
-            sweep_size = self.L[level_idx] * self.W[level_idx]
-        else:
-            sweep_size = point_cell.image_height * point_cell.image_width
+        print ("compression in %d blocks" % num_partition)
+        partition_size = len(all_sweep)//num_partition
+        for j in range(0, num_partition):
+            print ("\nPartitioning...")
+            sweep_s, sweep_e = j*partition_size, max((j+1)*partition_size, len(all_sweep))
+            partition_sweep = all_sweep[sweep_s:sweep_e]
+            points = (point_cell.partition_batch(partition_sweep, permutation=False))[0]
+            if self.range_view == False:
+                sweep_size = self.L[level_idx] * self.W[level_idx]
+            else:
+                sweep_size = point_cell.image_height * point_cell.image_width
 
-        pred_code = []
-        residual_code = []
-        pred_all = []
-        orig_all = []
-        print ("\nCompression...\n")
-        for i in tqdm(range(0, len(points), sweep_size)):
-            s, e = i, i+sweep_size
-            sweep_compress, compress_meta, sweep_orig, orig_meta = self.extract_sweep(points, s, e, level_idx)
-            gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
-            orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
-            orig_sweep = np.concatenate([gt_points, orig_points], axis=0)
+            pred_code = []
+            residual_code = []
+            pred_all = []
+            orig_all = []
+            print ("\nCompression...\n")
+            for i in tqdm(range(0, len(points), sweep_size)):
+                s, e = i, i+sweep_size
+                sweep_compress, compress_meta, sweep_orig, orig_meta = self.extract_sweep(points, s, e, level_idx)
+                gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
+                orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
+                orig_sweep = np.concatenate([gt_points, orig_points], axis=0)
 
-            compress_nums = compress_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-            compress_row = compress_meta.as_matrix(columns=['row']).squeeze().astype(int)
-            compress_col = compress_meta.as_matrix(columns=['col']).squeeze().astype(int)
-            orig_nums = orig_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-            total_compress_num = orig_nums.sum() + compress_nums.shape[0]*num_points
-            total_points = []
-            sweep_code = np.zeros([self.L[level_idx], self.W[level_idx], self.latent_dim])
+                compress_nums = compress_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
+                compress_row = compress_meta.as_matrix(columns=['row']).squeeze().astype(int)
+                compress_col = compress_meta.as_matrix(columns=['col']).squeeze().astype(int)
+                orig_nums = orig_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
+                total_compress_num = orig_nums.sum() + compress_nums.shape[0]*num_points
+                total_points = []
+                sweep_code = np.zeros([self.L[level_idx], self.W[level_idx], self.latent_dim])
 
-            test_batch_size = self.batch_size # hard coded, do not change other value except [64,128,256,512]
-            for j in range(len(sweep_compress)//test_batch_size + 1):
-                valid_s, valid_e = j*test_batch_size, min((j+1)*test_batch_size, len(sweep_compress))
-                if valid_e - valid_s == test_batch_size:
-                    fetched_pc = sweep_compress[valid_s:valid_e]
-                    fetched_meta = compress_nums[valid_s:valid_e]
-                else:
-                    pad_size = test_batch_size - (valid_e - valid_s)
-                    pad_shape = [pad_size] + list(sweep_compress[valid_s:valid_e].shape[1:])
-                    fetched_pc = np.concatenate([sweep_compress[valid_s:valid_e], np.zeros(pad_shape)], axis=0)
-                    fetched_meta = np.concatenate([compress_nums[valid_s:valid_e], np.zeros(pad_size)], axis=0)
-                feed_dict = {self.pc: fetched_pc,
-                             self.meta: fetched_meta,
-                             self.is_training: False}
-                code, recon = self.sess.run([self.latent_code, self.x_reconstr], feed_dict)
-                r, c = compress_row[valid_s:valid_e], compress_col[valid_s:valid_e]
-                # emd loss and chamfer loss return mean of batch, should multiply batch_size
-                sweep_code[r,c] = code[:(valid_e-valid_s)]
-                total_points.append(recon)
+                test_batch_size = self.batch_size # hard coded, do not change other value except [64,128,256,512]
+                for j in range(len(sweep_compress)//test_batch_size + 1):
+                    valid_s, valid_e = j*test_batch_size, min((j+1)*test_batch_size, len(sweep_compress))
+                    if valid_e - valid_s == test_batch_size:
+                        fetched_pc = sweep_compress[valid_s:valid_e]
+                        fetched_meta = compress_nums[valid_s:valid_e]
+                    else:
+                        pad_size = test_batch_size - (valid_e - valid_s)
+                        pad_shape = [pad_size] + list(sweep_compress[valid_s:valid_e].shape[1:])
+                        fetched_pc = np.concatenate([sweep_compress[valid_s:valid_e], np.zeros(pad_shape)], axis=0)
+                        fetched_meta = np.concatenate([compress_nums[valid_s:valid_e], np.zeros(pad_size)], axis=0)
+                    feed_dict = {self.pc: fetched_pc,
+                                 self.meta: fetched_meta,
+                                 self.is_training: False}
+                    code, recon = self.sess.run([self.latent_code, self.x_reconstr], feed_dict)
+                    r, c = compress_row[valid_s:valid_e], compress_col[valid_s:valid_e]
+                    # emd loss and chamfer loss return mean of batch, should multiply batch_size
+                    sweep_code[r,c] = code[:(valid_e-valid_s)]
+                    total_points.append(recon)
 
-            # orig = np.concatenate([sweep_compress[~np.all(sweep_compress == 0, axis=2)], sweep_orig[~np.all(sweep_orig == 0, axis=2)]], axis=0)
-            total_points = np.concatenate(total_points, axis=0)
-            pred_points = point_cell.reconstruct_scene(total_points, compress_meta)
-            pred_all.append(np.concatenate([pred_points, orig_points], axis=0))
-            orig_all.append(orig_sweep)
-            pred_code.append(sweep_code)
-            residual_code.append(orig_points)
+                # orig = np.concatenate([sweep_compress[~np.all(sweep_compress == 0, axis=2)], sweep_orig[~np.all(sweep_orig == 0, axis=2)]], axis=0)
+                total_points = np.concatenate(total_points, axis=0)
+                pred_points = point_cell.reconstruct_scene(total_points, compress_meta)
+                pred_all.append(np.concatenate([pred_points, orig_points], axis=0))
+                orig_all.append(orig_sweep)
+                pred_code.append(sweep_code)
+                residual_code.append(orig_points)
 
         print ("Saving compression latent code")
-        with h5py.File(self.save_path+'/code.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/code4.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(pred_code):
                 dset = f.create_dataset(str(idx), data=arr)
 
         print ("Saving uncompression points")
-        with h5py.File(self.save_path+'/aux_code.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/aux_code4.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(residual_code):
                 dset = f.create_dataset(str(idx), data=arr)
 
         print ("Saving reconstruction")
-        with h5py.File(self.save_path+'/recon.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/recon4.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(pred_all):
                 dset = f.create_dataset(str(idx), data=arr)
                         
         print ("Saving ground truth")
-        with h5py.File(self.save_path+'/orig.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/orig4.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(orig_all):
                 dset = f.create_dataset(str(idx), data=arr)
 
@@ -1239,11 +1240,11 @@ class StackAutoEncoder(AutoEncoder):
 
                 X = current_point[start_idx:end_idx]
                 meta = current_meta[start_idx:end_idx]
-                feed_dict={self.pc[0]: X[:,:,:3],
-                           self.pc[1]: X[:,:,3:],
-                           self.meta[0]: meta[:,0],
-                           self.meta[1]: meta[:,1],
-                           self.is_training: True}
+
+                feed_dict={self.is_training: True}
+                for i in range(self.level):
+                    feed_dict[self.pc[i]] = X[:,i,...]
+                    feed_dict[self.meta[i]] = meta[:,i,...]
                 
                 op = [self.train_op, 
                       self.emd_loss,
@@ -1302,11 +1303,11 @@ class StackAutoEncoder(AutoEncoder):
                                 fetched_meta = np.concatenate([meta_nums[start_idx:end_idx], np.zeros(pad_size)], axis=0)
                                 fetched_pmeta = np.concatenate([parent_nums[start_idx:end_idx], np.zeros(pad_size)], axis=0)
 
-                            feed_dict = {self.pc[0]: fetched_pc[:,:,:3], 
-                                         self.meta[0]: fetched_meta,
-                                         self.pc[1]: fetched_pc[:,:,3:],
-                                         self.meta[1]: fetched_pmeta, 
-                                         self.is_training: False}
+                            feed_dict={self.is_training: False}
+                            for i in range(self.level):
+                                feed_dict[self.pc[i]] = fetched_pc[:,i,...]
+                                feed_dict[self.meta[i]] = fetched_meta[:,i,...]
+
                             sg, se, sc = self.sess.run([self.x_reconstr, 
                                                         self.emd_loss, 
                                                         self.chamfer_loss], feed_dict)
@@ -1363,29 +1364,6 @@ class StackAutoEncoder(AutoEncoder):
 
         # check testing accuracy
         self.evaluate(test_point, test_meta, test=True)
-
-    def extract_point(self, points):
-        # num_sweeps = int(points[0].shape[0] / (self.L[0]*self.W[0]))
-        # for i in range(num_sweeps):
-        #     for level_idx in range(self.level):
-        #         sweep_size = self.L[level_idx]*self.W[level_idx]
-        #         points[level_idx]
-        level_idx = 1
-        level_points = points[level_idx]
-        sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
-        cur_points = sample_points_df.as_matrix(columns=['points'])
-        cur_points = np.array(list(cur_points.squeeze()))
-        parent_points = sample_points_df.as_matrix(columns=['parent'])
-        parent_points = np.array(list(parent_points.squeeze()))
-        sample_points = np.concatenate([cur_points, parent_points], axis=-1)
-        sample_meta = sample_points_df
-
-        orig_points_df = level_points[(level_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
-        orig_points = orig_points_df.as_matrix(columns=['points'])
-        orig_points = np.array(list(orig_points.squeeze()))
-        orig_meta = orig_points_df
-
-        return sample_points, sample_meta, orig_points, orig_meta
         
     def evaluate(self, valid_point, valid_meta, test=True):
 
@@ -1394,16 +1372,11 @@ class StackAutoEncoder(AutoEncoder):
         mean_arr, var_arr, mse_arr = [], [], []
         for i in range(len(valid_point)//self.batch_size):
             valid_s, valid_e = i*self.batch_size, (i+1)*self.batch_size
-            if len(self.origin_num_points) > 1:
-                feed_dict = {self.top_pc: valid_point[valid_s:valid_e,:,:3],
-                             self.top_meta: valid_meta[valid_s:valid_e,0],
-                             self.low_pc: valid_point[valid_s:valid_e,:,3:],
-                             self.low_meta: valid_meta[valid_s:valid_e,1],
-                             self.is_training: False}
-            else:
-                feed_dict = {self.top_pc: valid_point[valid_s:valid_e],
-                             self.top_meta: valid_meta[valid_s:valid_e],
-                             self.is_training: False}
+            feed_dict={self.is_training: False}
+            for i in range(self.level):
+                feed_dict[self.pc[i]] = valid_point[valid_s:valid_e,i,...]
+                feed_dict[self.meta[i]] = valid_meta[valid_s:valid_e,i,...]
+
             vel, vcl, recon = self.sess.run([self.emd_loss, self.chamfer_loss, self.x_reconstr], feed_dict)
             mean, var, mse = util.dist_stat(recon, 
                                             valid_point[valid_s:valid_e,:,3:], 
@@ -1429,461 +1402,55 @@ class StackAutoEncoder(AutoEncoder):
 
     def preprocess(self, point_cell):
         train_cell, valid_cell = point_cell.partition(point_cell.train_cleaned_velo)
-        train_point, train_meta, train_orig_point, train_orig_meta = self.extract_point(train_cell)
-        valid_point, valid_meta, valid_orig_point, valid_orig_meta = self.extract_point(valid_cell)
-        test_point, test_meta, test_orig_point, test_orig_meta = self.extract_point(point_cell.test_cell)
-
-        train_meta_l = train_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-        valid_meta_l = valid_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-        test_meta_l = test_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
-        train_meta_h = train_meta.as_matrix(columns=['parent_nump']).squeeze().astype(int)
-        valid_meta_h = valid_meta.as_matrix(columns=['parent_nump']).squeeze().astype(int)
-        test_meta_h = test_meta.as_matrix(columns=['parent_nump']).squeeze().astype(int)
-
-        train_meta = np.stack([train_meta_h, train_meta_l], -1)
-        valid_meta = np.stack([valid_meta_h, valid_meta_l], -1)
-        test_meta = np.stack([test_meta_h, test_meta_l], -1)
-
-        return train_point, valid_point, test_point, train_meta, valid_meta, test_meta
-
-
-
-
-
-# class StackAutoEncoder():
-#     def __init__(self, FLAGS):
-#         self.batch_size = FLAGS.batch_size        
-#         self.latent_dim = FLAGS.latent_dim
-#         self.num_epochs = FLAGS.num_epochs
-#         self.save_freq = FLAGS.save_freq
-#         self.save_path = FLAGS.save_path
-#         self.fb_split = FLAGS.fb_split
-#         self.level = len(FLAGS.PW)
-
-#         self.factor = FLAGS.PL[1] / FLAGS.PL[0] if len(FLAGS.PL) > 1 else 1
-#         self.learning_rate = FLAGS.learning_rate
-#         self.loss_type = FLAGS.loss_type
-#         self.origin_num_points = list(map(int, FLAGS.cell_max_points.split(',')))
-#         self.DECAY_RATE = 0.8
-#         self.DECAY_STEP = FLAGS.decay_step
-#         self.BN_INIT_DECAY = 0.5
-#         self.BN_DECAY_DECAY_RATE = 0.5
-#         self.BN_DECAY_DECAY_STEP = float(self.DECAY_STEP)
-#         self.BN_DECAY_CLIP = 0.99
-#         self.enable_2ndfold = True
-#         self.map_size = [8, 8, 8]
-#         self.encoder_mode = FLAGS.encoder
-#         self.decoder_mode = FLAGS.decoder
-
-#         self.g = tf.Graph()
-#         self._build_model(self.g)
-
-#     def _encoder(self, net, mask, name_scope):
-#         with tf.variable_scope(name_scope, reuse=tf.AUTO_REUSE):
-#             net = tf_util.point_conv(input_image=net, 
-#                                      is_training=self.is_training, 
-#                                      n_filters=[64, 64], 
-#                                      name="encoder1")
-#             net = tf_util.point_conv(input_image=net, 
-#                                      is_training=self.is_training, 
-#                                      n_filters=[64, self.latent_dim],
-#                                      name="encoder2")
-
-#         return mask * net
-
-#     def _decoder(self, code, name_scope):
-#         with tf.variable_scope(name_scope, reuse=tf.AUTO_REUSE):
-#             if self.decoder_mode == 'pointnet':
-#                 x_reconstr = tf_util.fully_connected_decoder(code, 
-#                                                              self.origin_num_points[1], 
-#                                                              self.is_training)
-#             elif self.decoder_mode == 'pointgrid':
-#                 code = tf.expand_dims(code, -2)
-#                 global_code_tile = tf.tile(code, [1, self.origin_num_points[1], 1])
-#                 local_code_tile = tf_util.fold3d(self.origin_num_points[1], 
-#                                                  self.map_size,
-#                                                  tf.shape(code)[0])
-#                 all_code = tf.concat([local_code_tile, global_code_tile], axis=-1)
-
-#                 net = tf_util.point_conv(all_code, 
-#                                          self.is_training, 
-#                                          n_filters=[256, 128, 64], 
-#                                          activation_function=tf.nn.relu,
-#                                          name="decoder1")
-#                 net = tf_util.point_conv(net, 
-#                                          self.is_training, 
-#                                          n_filters=[3],
-#                                          activation_function=None,
-#                                          name="decoder2")
-#                 # second folding
-#                 if self.enable_2ndfold:
-#                     net = tf.concat([local_code_tile, net], axis=-1)
-#                     net = tf_util.point_conv(net, 
-#                                              self.is_training, 
-#                                              n_filters=[258, 128, 64], 
-#                                              activation_function=tf.nn.relu,
-#                                              name="decoder3")
-#                     net = tf_util.point_conv(net, 
-#                                              self.is_training, 
-#                                              n_filters=[3],
-#                                              activation_function=None,
-#                                              name="decoder4")
-#                 net = tf.reshape(net, [-1, self.origin_num_points[1], 3])
-#                 net_xy = tf.nn.tanh(net[:,:,0:2])
-#                 net_z = tf.expand_dims(net[:,:,2], -1)
-#                 x_reconstr = tf.concat([net_xy, net_z], -1)
-#         return self.mask * x_reconstr
-
-#     def _fuse(self, code):
-#         code = tf.expand_dims(code, -2)
-#         code = tf_util.point_conv(code, 
-#                          self.is_training, 
-#                          n_filters=[32, self.latent_dim],
-#                          activation_function=None,
-#                          name="fuse")
-#         return code
-
-#     def _ae(self, top_pc, top_mask, low_pc, low_mask):
-
-#         # ------- encoder -------
-#         top_latent = self._encoder(top_pc, top_mask, name_scope='top_encoder')
-#         top_code = tf.reduce_max(top_latent, axis=-2, keepdims=False)
-
-#         if len(self.origin_num_points) > 1:
-#             low_code = []
-#             for l in range(self.factor):
-#                 # ------- encoder -------
-#                 low_latent = self._encoder(low_pc[:, l], low_mask[:, l], name_scope='low_encoder')
-#                 low_code.append(tf.reduce_max(low_latent, axis=-2, keepdims=False))
-
-#             l_code = tf.stack(low_code, axis=1)
-#             t_code = tf.tile(tf.expand_dims(top_code, axis=1), [1, self.factor, 1])
-#             code = tf.concat([l_code, t_code], axis=-1)
-
-#             combined_code = self._fuse(code)
-#         else:
-#             combined_code = top_code
-
-#         # ------- decoder ------- 
-#         x_reconstr = self._decoder(combined_code, name_scope='decoder')
-
-#         return x_reconstr
-
-#     def _build_model(self, g):
-#         with g.as_default():
-#             # MLP: all_points [batch, 200, 2] -> MLP -> node_feature [batch, 200, 10]
-#             self.top_pc = tf.placeholder(tf.float32, [None, self.origin_num_points[0], 3])
-#             self.top_meta = tf.placeholder(tf.int32, [None])
-#             top_mask = tf.sequence_mask(self.top_meta, maxlen=self.origin_num_points[0], dtype=tf.float32)
-#             self.top_mask = tf.expand_dims(top_mask, -1)
-
-#             if len(self.origin_num_points) > 1:
-#                 self.low_pc = tf.placeholder(tf.float32, [None, self.factor, self.origin_num_points[1], 3])
-#                 self.low_meta = tf.placeholder(tf.int32, [None, self.factor])
-#                 low_mask = []
-#                 for i in range(self.factor):
-#                     low_mask.append(tf.sequence_mask(self.low_meta[:,i], maxlen=self.origin_num_points[1], dtype=tf.float32))
-#                 self.low_mask = tf.expand_dims(tf.stack(low_mask, axis=1), -1)
-
-#             self.is_training = tf.placeholder(tf.bool, shape=())
-            
-#             batch = tf.get_variable('batch', [],
-#                 initializer=tf.constant_initializer(0), trainable=False)
-
-#             self.x_reconstr = self._ae(self.top_pc, self.top_mask, self.low_pc, self.low_mask)
-
-#             match = approx_match(self.x_reconstr, self.top_pc)
-#             self.emd_loss = tf.reduce_mean(match_cost(self.x_reconstr, self.top_pc, match))
-
-#             def calculate_chamfer(recon, orig, num_points):
-#                 x_reconstr, pc = tf.expand_dims(recon[:num_points], 0), tf.expand_dims(orig[:num_points], 0)
-#                 cost_p1_p2, _, cost_p2_p1, _ = nn_distance(x_reconstr, pc)
-#                 return tf.reduce_mean(cost_p1_p2) + tf.reduce_mean(cost_p2_p1)
-
-#             # self.chamfer_loss = calculate_chamfer(self.x_reconstr, self.pc)
-#             self.chamfer_loss = tf.reduce_mean(tf.map_fn(lambda x: calculate_chamfer(x[0], x[1], x[2]), 
-#                                                          (self.x_reconstr, self.top_pc, self.top_meta), dtype=tf.float32))
-#             #  -------  loss + optimization  ------- 
-#             if self.loss_type == "emd":
-#                 self.reconstruction_loss = self.emd_loss
-#             elif self.loss_type == "chamfer":
-#                 self.reconstruction_loss = self.chamfer_loss
-
-#             # reg_losses = self.graph.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-
-#             learning_rate = self.get_learning_rate(batch)
-#             optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
-
-#             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-#             with tf.control_dependencies(update_ops):
-#                 self.train_op = optimizer.minimize(self.reconstruction_loss, global_step=batch)
-            
-#             config = tf.ConfigProto()
-#             config.gpu_options.allow_growth = True
-#             config.allow_soft_placement = True
-#             config.log_device_placement = False
-#             self.sess = tf.Session(config=config)
-
-#             self.sess.run(tf.global_variables_initializer())
-#             self.saver = tf.train.Saver()
-
-#     def train(self, point_cell, mode='foreground'):
-        
-#         train_point, valid_point, test_point, \
-#         train_meta, valid_meta, test_meta = self.preprocess(point_cell, self.current_level, mode)
-
-#         record_loss = []
-
-#         num_batches = train_point.shape[0] // self.batch_size
-#         for epoch in range(self.num_epochs):
-
-#             train_idx = np.arange(0, len(dataset.train_set))
-#             np.random.shuffle(train_idx)
-#             current_point = train_point[train_idx]
-#             current_meta = train_meta[train_idx]
-
-#             record_mean, record_var, record_mse = [], [], []
-#             for batch_idx in range(num_batches):
-#                 start_idx = batch_idx * self.batch_size
-#                 end_idx = (batch_idx+1) * self.batch_size
-
-#                 X = current_point[start_idx:end_idx]
-#                 meta = current_meta[start_idx:end_idx]
-#                 if len(self.origin_num_points) > 1:
-#                     feed_dict={self.top_pc: X, 
-#                                # self.low_pc: ,
-#                                self.top_meta: meta, 
-#                                # self.low_meta: ,
-#                                self.is_training: True}
-#                 else:
-#                     feed_dict={self.top_pc: X, self.top_meta: meta, self.is_training: True}
-#                 op = [self.train_op, 
-#                       self.emd_loss,
-#                       self.chamfer_loss,
-#                       self.x_reconstr,]
-#                 _, emd_loss, chamfer_loss, recon = self.sess.run(op, feed_dict)
-#                 if self.loss_type == 'emd':
-#                     record_loss.append(emd_loss)
-#                 elif self.loss_type == 'chamfer':
-#                     record_loss.append(chamfer_loss)
-#                 mean, var, mse = util.dist_stat(recon, X, meta, self.origin_num_points[level_idx])
-#                 record_mean.append(mean)
-#                 record_var.append(var)
-#                 record_mse.append(mse)
-
-#                 compression_ratio = (self.batch_size*self.latent_dim) / (np.sum(meta)*3.0)
-#                 if batch_idx % 100 == 0:
-#                     print ("iteration/epoch: {}/{}, optimizing {} loss, emd loss: {}, chamfer loss: {}".format(
-#                         batch_idx, epoch, self.loss_type, emd_loss, chamfer_loss))
-#                     print ("mean: %.6f, var: %.6f, mse: %.6f, compression ratio: %.6f\n" % 
-#                                                                       (np.array(record_mean).mean(), 
-#                                                                        np.array(record_var).mean(), 
-#                                                                        np.array(record_mse).mean(),
-#                                                                        compression_ratio))
-#             if epoch % self.save_freq == 0:
-#                 ckpt_path = util.create_dir(osp.join(self.save_path, 'level_%s' % (self.current_level)))
-#                 if self.fb_split == True:
-#                     ckpt_name = osp.join(ckpt_path, 'model-%s-%s.ckpt' % (mode, str(epoch)))
-#                 else:
-#                     ckpt_name =  osp.join(ckpt_path, 'model-%s.ckpt' % (str(epoch)))
-                
-#                 self.saver.save(self.sess, ckpt_name)
-
-#                 # evaluation
-#                 valid_emd_loss, valid_chamfer_loss = [], []
-#                 i = 0
-#                 for i in range(len(valid_point)//self.batch_size):
-#                     valid_s, valid_e = i*self.batch_size, (i+1)*self.batch_size
-#                     if len(self.origin_num_points) > 1:
-#                         feed_dict = {self.top_pc: valid_point[valid_s:valid_e],
-#                                      self.top_meta: valid_meta[valid_s:valid_e],
-#                                      # self.low_pc: ,
-#                                      # self.low_meta: ,
-#                                      self.is_training: False}
-#                     else:
-#                         feed_dict = {self.top_pc: valid_point[valid_s:valid_e],
-#                                      self.top_meta: valid_meta[valid_s:valid_e],
-#                                      self.is_training: False}
-#                     vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
-#                     valid_emd_loss.append(vel)
-#                     valid_chamfer_loss.append(vcl)
-#                 if len(self.origin_num_points) > 1:
-#                         feed_dict = {self.top_pc: valid_point[i*self.batch_size:],
-#                                      self.top_meta: valid_meta[i*self.batch_size:],
-#                                      # self.low_pc: ,
-#                                      # self.low_meta: ,
-#                                      self.is_training: False}
-#                 else:
-#                     feed_dict = {self.pc: valid_point[i*self.batch_size:],
-#                                  self.meta: valid_meta[i*self.batch_size:], 
-#                                  self.is_training: False}
-#                 vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
-#                 valid_emd_loss.append(vel)
-#                 valid_chamfer_loss.append(vcl)
-#                 print ('validation emd loss: {}, validation chamfer loss: {}'.format(np.array(valid_emd_loss).mean(),
-#                                                                                          np.array(valid_chamfer_loss).mean()))
-
-#                 def visualize_sample(sample_points, sample_meta, filename=None):
-#                     meta_nums = sample_meta['num_points'].values.astype(int)
-#                     feed_dict = {self.pc: sample_points, 
-#                                  self.meta: meta_nums, 
-#                                  self.is_training: False}
-#                     sample_generated, sample_emd, sample_chamfer = self.sess.run([self.x_reconstr, 
-#                                                                    self.emd_loss, 
-#                                                                    self.chamfer_loss], feed_dict)
-#                     reconstruction = point_cell.reconstruct_scene(sample_generated, sample_meta)
-#                     if filename == None:
-#                         sweep = point_cell.test_sweep[point_cell.sample_idx]
-#                     elif filename == 'foreground':
-#                         sweep = point_cell.test_f_sweep
-#                     elif filename == 'background':
-#                         sweep = point_cell.test_b_sweep
-
-#                     mean, var, mse = util.sweep_stat(reconstruction, sweep)
-#                     print ('sampled sweep emd loss: {}, chamfer loss: {}, MSE: {}'.format(sample_emd,
-#                                                                                           sample_chamfer,
-#                                                                                           mse))
-#                     print ('save reconstructed sweep')
-#                     full_filename = 'orig_'+str(epoch) if filename == None else 'orig_{}_{}'.format(filename, str(epoch))
-#                     util.visualize_3d_points(sweep, dir=ckpt_path, filename=full_filename)
-#                     full_filename = 'recon_'+str(epoch) if filename == None else 'recon_{}_{}'.format(filename, str(epoch))
-#                     util.visualize_3d_points(reconstruction, dir=ckpt_path, filename=full_filename)
-#                     return reconstruction, sweep
-                
-#                 # plot
-#                 meta_columns = ['index', 'ratio', 'center', 'level', 'num_points'] 
-#                 if self.fb_split == True:
-#                     sample_points = point_cell.sample_points_f[level_idx].as_matrix(columns=['points'])
-#                     sample_points = np.array(list(sample_points.squeeze()))
-#                     sample_meta = point_cell.sample_points_f[level_idx][meta_columns]
-#                     rf, sf = visualize_sample(sample_points, sample_meta, 'foreground')
-
-#                     sample_points = point_cell.sample_points_b[level_idx].as_matrix(columns=['points'])
-#                     sample_points = np.array(list(sample_points.squeeze()))
-#                     sample_meta = point_cell.sample_points_b[level_idx][meta_columns]
-#                     rb, sb = visualize_sample(sample_points, sample_meta, 'background')
-#                     reconstruction = np.concatenate([rf, rb], 0)
-#                     sweep = np.concatenate([sf, sb], 0)
-#                     util.visualize_3d_points(sweep, dir=ckpt_path, filename='orig_{}'.format(str(epoch)))
-#                     util.visualize_3d_points(reconstruction, dir=ckpt_path, filename='recon_{}'.format(str(epoch)))
-#                 else:
-#                     sample_points = point_cell.sample_points[level_idx].as_matrix(columns=['points'])
-#                     sample_points = np.array(list(sample_points.squeeze()))
-#                     sample_meta = point_cell.sample_points[level_idx][meta_columns]                  
-#                     visualize_sample(sample_points, sample_meta)
-
-#         # check testing accuracy
-#         test_emd_loss, test_chamfer_loss = [], []
-#         i = 0
-#         for i in range(len(test_point)//self.batch_size):
-#             test_s, test_e = i*self.batch_size, (i+1)*self.batch_size
-#             feed_dict = {self.pc: test_point[test_s:test_e],
-#                          self.meta: test_meta[test_s:test_e],
-#                          self.is_training: False}
-#             vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
-#             test_emd_loss.append(vel)
-#             test_chamfer_loss.append(vcl)
-
-#         feed_dict = {self.pc: test_point[i*self.batch_size:],
-#                      self.meta: test_meta[i*self.batch_size:], 
-#                      self.is_training: False}
-#         vel, vcl = self.sess.run([self.emd_loss, self.chamfer_loss], feed_dict)
-#         test_emd_loss.append(vel)
-#         test_chamfer_loss.append(vcl)
-#         print ('validation emd loss: {}, validation chamfer loss: {}'.format(np.array(test_emd_loss).mean(),
-#                                                                              np.array(test_chamfer_loss).mean()))
-
-
-                
-#     def get_learning_rate(self, batch):
-#         learning_rate = tf.train.exponential_decay(
-#                             self.learning_rate,  # Base learning rate.
-#                             batch * self.batch_size,  # Current index into the dataset.
-#                             self.DECAY_STEP,          # Decay step.
-#                             self.DECAY_RATE,          # Decay rate.
-#                             staircase=True)
-#         learning_rate = tf.maximum(learning_rate, 0.00001) # CLIP THE LEARNING RATE!
-#         return learning_rate
-
-#     def get_bn_decay(self, batch):
-#         bn_momentum = tf.train.exponential_decay(
-#                           self.BN_INIT_DECAY,
-#                           batch*self.batch_size,
-#                           self.BN_DECAY_DECAY_STEP,
-#                           self.BN_DECAY_DECAY_RATE,
-#                           staircase=True)
-#         bn_decay = tf.minimum(self.BN_DECAY_CLIP, 1 - bn_momentum)
-#         return bn_decay
-
-
-#     def preprocess(self, point_cell, level_idx, mode='foreground'):
-#         if self.fb_split == True:
-#             if mode == 'foreground':
-#                 train_point = point_cell.train_cell_f[level_idx].as_matrix(columns=['points'])
-#                 train_point = np.array(list(train_point.squeeze()))
-#                 valid_point = point_cell.valid_cell_f[level_idx].as_matrix(columns=['points'])
-#                 valid_point = np.array(list(valid_point.squeeze()))
-#                 test_point = point_cell.test_cell_f[level_idx].as_matrix(columns=['points'])
-#                 test_point = np.array(list(test_point.squeeze()))
-
-#                 train_point_l = point_cell.train_cell_f[level_idx].as_matrix(columns=['children'])
-#                 train_point_l = np.array(list(train_point_l.squeeze()))
-#                 valid_point_l = point_cell.valid_cell_f[level_idx].as_matrix(columns=['children'])
-#                 valid_point_l = np.array(list(valid_point_l.squeeze()))
-#                 test_point_l = point_cell.test_cell_f[level_idx].as_matrix(columns=['children'])
-#                 test_point_l = np.array(list(test_point_l.squeeze()))
-
-#                 train_meta = point_cell.train_cell_f[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-#                 valid_meta = point_cell.valid_cell_f[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-#                 test_meta = point_cell.test_cell_f[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-
-#             elif mode == 'background':
-#                 train_point = point_cell.train_cell_b[level_idx].as_matrix(columns=['points'])
-#                 train_point = np.array(list(train_point.squeeze()))
-#                 valid_point = point_cell.valid_cell_b[level_idx].as_matrix(columns=['points'])
-#                 valid_point = np.array(list(valid_point.squeeze()))
-#                 test_point = point_cell.test_cell_b[level_idx].as_matrix(columns=['points'])
-#                 test_point = np.array(list(test_point.squeeze()))
-
-#                 train_point_l = point_cell.train_cell_f[level_idx].as_matrix(columns=['children'])
-#                 train_point_l = np.array(list(train_point_l.squeeze()))
-#                 valid_point_l = point_cell.valid_cell_f[level_idx].as_matrix(columns=['children'])
-#                 valid_point_l = np.array(list(valid_point_l.squeeze()))
-#                 test_point_l = point_cell.test_cell_f[level_idx].as_matrix(columns=['children'])
-#                 test_point_l = np.array(list(test_point_l.squeeze()))
-
-
-#                 train_meta = point_cell.train_cell_b[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-#                 valid_meta = point_cell.valid_cell_b[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-#                 test_meta = point_cell.test_cell_b[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-
-#             else:
-#                 print ("unkonwn mode {}, should be either foreground or background!" % mode)
-#                 raise
-#         else:
-#             train_point = point_cell.train_cell[level_idx].as_matrix(columns=['points'])
-#             train_point = np.array(list(train_point.squeeze()))
-#             valid_point = point_cell.valid_cell[level_idx].as_matrix(columns=['points'])
-#             valid_point = np.array(list(valid_point.squeeze()))
-#             test_point = point_cell.test_cell[level_idx].as_matrix(columns=['points'])
-#             test_point = np.array(list(test_point.squeeze()))
-        
-#             train_meta = point_cell.train_cell[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-#             valid_meta = point_cell.valid_cell[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-#             test_meta = point_cell.test_cell[level_idx].as_matrix(columns=['num_points']).squeeze().astype(int)
-
-#         return train_point, valid_point, test_point, train_meta, valid_meta, test_meta
-
-#     def predict(self, points, info, ckpt_name, mode='foreground'):
-
-#         meta = np.array([info[i]['num_points'] for i in range(len(info))])
-#         self.sess.run(tf.global_variables_initializer())
-#         self.saver.restore(self.sess, os.path.join(self.save_path, ckpt_name))
-#         feed_dict = {self.pc: np.array(points), self.meta: meta, self.is_training: False}
-#         point_reconstr, reconstr_loss = self.sess.run([self.x_reconstr, self.reconstruction_loss], feed_dict)
-#         return point_reconstr
-
-
-
-
+        train_point, train_meta, train_num, train_orig_point, train_orig_meta, train_orig_num = self.extract_point(train_cell)
+        valid_point, valid_meta, valid_num, valid_orig_point, valid_orig_meta, valid_orig_num = self.extract_point(valid_cell)
+        test_point, test_meta, test_num, test_orig_point, test_orig_meta, test_orig_num = self.extract_point(point_cell.test_cell)
+
+        return train_point, valid_point, test_point, train_num, valid_num, test_num
+
+    def group_multi(self, points):
+        print ("grouping multi scale cells...")
+        total_sweep_size = self.L[0]*self.W[0]
+        num_sweeps = int(points[0].shape[0] / total_sweep_size)
+        stacked_points = [np.array(list(points[0].as_matrix(columns=['stacked']).squeeze()))]
+        stacked_num = [np.array(list(points[0].as_matrix(columns=['num_points']).squeeze()))]
+        for level_idx in range(1, self.level):
+            factor = (self.L[0]//self.L[level_idx])
+            sweep_size = self.L[level_idx]*self.W[level_idx]
+            level_points = np.array(list(points[level_idx].as_matrix(columns=['points']).squeeze()))
+            level_shape = [num_sweeps, self.L[level_idx], self.W[level_idx], level_points.shape[-2], 3]
+            level_points = np.reshape(level_points, level_shape)
+            level_points = np.repeat(np.repeat(level_points, factor, axis=1), factor, axis=2)
+            stacked_points.append(np.reshape(level_points, [-1, level_shape[-2], 3]))
+
+            level_num = np.array(list(points[level_idx].as_matrix(columns=['num_points']).squeeze()))
+            level_num = np.reshape(level_num, [num_sweeps, self.L[level_idx], self.W[level_idx]])
+            level_num = np.repeat(np.repeat(level_num, factor, axis=1), factor, axis=2)
+            stacked_num.append(np.reshape(level_num, -1))
+        stacked_points = np.stack(stacked_points)
+        stacked_num = np.stack(stacked_num)
+
+        for i in range(points[0].shape[0]):
+            points[0].iloc[i]['stacked'] = stacked_points[:,i,...]
+            points[0].iloc[i]['stacked_num'] = stacked_num[:,i]
+
+        return points
+
+    def extract_point(self, points):
+
+        points = self.group_multi(points)
+        level_idx = 0
+        low_points = points[level_idx]
+        sample_points_df = low_points[low_points['num_points'] >= self.cell_min_points[level_idx]]
+        parent_points = sample_points_df.as_matrix(columns=['stacked'])
+        parent_points = np.array(list(parent_points.squeeze()))
+        sample_num = np.array(list(sample_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
+        sample_meta = sample_points_df
+
+        orig_points_df = low_points[(low_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
+        orig_points = orig_points_df.as_matrix(columns=['points'])
+        orig_points = np.array(list(orig_points.squeeze()))
+        orig_meta = orig_points_df
+
+        return parent_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 

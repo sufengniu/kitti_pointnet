@@ -54,7 +54,7 @@ tf.flags.DEFINE_string("cell_min_points", '50,50',
 
 # compression
 tf.flags.DEFINE_string("mode", "autoencoder",
-                       "[kmeans|random|autoencoder], random, kmeans or autoencoder based")
+                       "[kmeans|random|octree|autoencoder|encoder|decoder], random, kmeans, octree or autoencoder based")
 tf.flags.DEFINE_string("loss_type", "chamfer",
                        "loss type [chamfer|emd]")
 tf.flags.DEFINE_string("encoder", "pointnet",
@@ -80,8 +80,8 @@ tf.flags.DEFINE_boolean("stacked", False,
                        "if it is multi-scale or not")
 tf.flags.DEFINE_boolean("training", False, 
                        "whether it is train or evaluation")
-tf.flags.DEFINE_boolean("compress", False, 
-                       "whether it compress or not")
+tf.flags.DEFINE_boolean("all_kitti", False, 
+                       "whether compress data or not")
 tf.flags.DEFINE_float("seed", 3122018, "Random seeds for results reproduction")
 tf.flags.DEFINE_integer("num_epochs", 280,
                        "number of training epoch")
