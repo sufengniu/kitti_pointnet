@@ -1110,11 +1110,12 @@ class StackAutoEncoder(AutoEncoder):
 
         # ------- decoder ------- 
         x_reconstr = self._decoder(combined_code, mask[0], bn_decay, name_scope='decoder')
+
         if self.rotation == True:
             # rotate_matrix = tf.stop_gradient(tf.matrix_inverse(transform))
             rotate_matrix = tf.matrix_inverse(transform)
 
-            return tf.matmul(x_reconstr, rotate_matrix)
+            return tf.matmul(x_reconstr, rotate_matrix), combined_code
         else:
             return x_reconstr, combined_code
 
