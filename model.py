@@ -552,8 +552,8 @@ class AutoEncoder():
         if test == True:
             print ('Testing emd loss: {}, Testing chamfer loss: {}'.format(np.array(valid_emd_loss).mean(),
                                                                            np.array(valid_chamfer_loss).mean()))
-            print ('mean: %.6f, var: %.6f, mse: %.6f' % (np.array(mean_arr).mean(), 
-                                                             np.array(var_arr).mean(), 
+            print ('mean: %.6f, var: %.6f, mse: %.6f' % (np.array(mean_arr).mean(),
+                                                             np.array(var_arr).mean(),
                                                              np.array(mse_arr).mean()))
 
             with open(os.path.join(save_path, 'mean.txt'), 'a') as myfile:
@@ -1239,7 +1239,7 @@ class StackAutoEncoder(AutoEncoder):
                 feed_dict={self.is_training: True}
                 for i in range(self.level):
                     feed_dict[self.pc[i]] = X[:,i,...]
-                    feed_dict[self.meta[i]] = meta[:,i,...]
+                    feed_dict[self.meta[i]] = meta[:,i]
                 
                 op = [self.train_op, 
                       self.emd_loss,
@@ -1250,7 +1250,7 @@ class StackAutoEncoder(AutoEncoder):
                     record_loss.append(emd_loss)
                 elif self.loss_type == 'chamfer':
                     record_loss.append(chamfer_loss)
-                mean, var, mse = util.dist_stat(recon, X[:,:,3:], meta[:,1], self.origin_num_points[1])
+                mean, var, mse = util.dist_stat(recon, X[:,0,:,:], meta[:,0], self.origin_num_points[0])
                 record_mean.append(mean)
                 record_var.append(var)
                 record_mse.append(mse)
@@ -1281,11 +1281,11 @@ class StackAutoEncoder(AutoEncoder):
                 self.evaluate(valid_point, valid_meta, test=False)
                 self.evaluate(test_point, test_meta, test=True)
 
-                def visualize_sample(sample_points, sample_meta, orig_points, orig_meta, filename=None):
+                def visualize_sample(sample_points, sample_meta, sample_num, orig_points, orig_meta, filename=None):
                     
                     meta_nums = sample_meta['num_points'].values.astype(int)
-                    parent_nums = sample_meta['parent_nump'].values.astype(int)
-                    if (meta_nums >= self.cell_min_points[level_idx]).all():
+                    parent_nums = sample_num
+                    if (meta_nums >= self.cell_min_points[0]).all():
 
                         sample_generated, sample_emd, sample_chamfer = [], [], []
                         for idx in range(0, sample_points.shape[0], self.batch_size):
@@ -1299,12 +1299,12 @@ class StackAutoEncoder(AutoEncoder):
                                 pad_shape = [pad_size] + list(sample_points[start_idx:end_idx].shape[1:])
                                 fetched_pc = np.concatenate([sample_points[start_idx:end_idx], np.zeros(pad_shape)], axis=0)
                                 fetched_meta = np.concatenate([meta_nums[start_idx:end_idx], np.zeros(pad_size)], axis=0)
-                                fetched_pmeta = np.concatenate([parent_nums[start_idx:end_idx], np.zeros(pad_size)], axis=0)
+                                fetched_pmeta = np.concatenate([parent_nums[start_idx:end_idx], np.zeros([pad_size, self.level])], axis=0)
 
                             feed_dict={self.is_training: False}
                             for i in range(self.level):
                                 feed_dict[self.pc[i]] = fetched_pc[:,i,...]
-                                feed_dict[self.meta[i]] = fetched_meta[:,i,...]
+                                feed_dict[self.meta[i]] = fetched_pmeta[:,i]
 
                             sg, se, sc = self.sess.run([self.x_reconstr, 
                                                         self.emd_loss, 
@@ -1357,8 +1357,8 @@ class StackAutoEncoder(AutoEncoder):
                     util.visualize_3d_points(sweep, dir=ckpt_path, filename='orig_{}'.format(str(epoch)))
                     util.visualize_3d_points(reconstruction, dir=ckpt_path, filename='recon_{}'.format(str(epoch)))
                 else:
-                    sample_points, sample_meta, orig_points, orig_meta = self.extract_point(point_cell.sample_points)                
-                    visualize_sample(sample_points, sample_meta)
+                    sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num = self.extract_point(point_cell.sample_points)
+                    visualize_sample(sample_points, sample_meta, sample_num, orig_points, orig_meta)
 
         # check testing accuracy
         self.evaluate(test_point, test_meta, test=True)
@@ -1373,12 +1373,12 @@ class StackAutoEncoder(AutoEncoder):
             feed_dict={self.is_training: False}
             for i in range(self.level):
                 feed_dict[self.pc[i]] = valid_point[valid_s:valid_e,i,...]
-                feed_dict[self.meta[i]] = valid_meta[valid_s:valid_e,i,...]
+                feed_dict[self.meta[i]] = valid_meta[valid_s:valid_e,i]
 
             vel, vcl, recon = self.sess.run([self.emd_loss, self.chamfer_loss, self.x_reconstr], feed_dict)
             mean, var, mse = util.dist_stat(recon, 
-                                            valid_point[valid_s:valid_e,:,3:], 
-                                            valid_meta[valid_s:valid_e,1], self.origin_num_points[1])
+                                            valid_point[valid_s:valid_e,0,...], 
+                                            valid_meta[valid_s:valid_e,0], self.origin_num_points[1])
             mean_arr.append(mean)
             var_arr.append(var)
             mse_arr.append(mse)
@@ -1411,6 +1411,8 @@ class StackAutoEncoder(AutoEncoder):
         total_sweep_size = self.L[0]*self.W[0]
         num_sweeps = int(points[0].shape[0] / total_sweep_size)
         stacked_points = [np.array(list(points[0].as_matrix(columns=['stacked']).squeeze()))]
+        if stacked_points[0].shape != np.array(list(points[0].as_matrix(columns=['points']).squeeze())).shape:
+            return points
         stacked_num = [np.array(list(points[0].as_matrix(columns=['num_points']).squeeze()))]
         for level_idx in range(1, self.level):
             factor = (self.L[0]//self.L[level_idx])
@@ -1445,11 +1447,28 @@ class StackAutoEncoder(AutoEncoder):
         sample_num = np.array(list(sample_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         sample_meta = sample_points_df
 
-        orig_points_df = low_points[(low_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
+        orig_points_df = low_points[(low_points['num_points']<self.cell_min_points[level_idx]) & (low_points['num_points']>0)]
         orig_points = orig_points_df.as_matrix(columns=['points'])
         orig_points = np.array(list(orig_points.squeeze()))
+        orig_num = np.array(list(orig_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         orig_meta = orig_points_df
 
         return parent_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
-                                                            
+    def extract_sweep(self, points, start_idx, end_idx):
+        level_idx = 0
+        low_points = points[level_idx]
+        level_points = points.iloc[start_idx:end_idx]
+        sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
+        sample_points = sample_points_df.as_matrix(columns=['stacked'])
+        sample_points = np.array(list(sample_points.squeeze()))
+        sample_num = np.array(list(sample_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
+        sample_meta = sample_points_df
+
+        orig_points_df = level_points[(level_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
+        orig_points = orig_points_df.as_matrix(columns=['points'])
+        orig_points = np.array(list(orig_points.squeeze()))
+        orig_num = orig_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
+        orig_meta = orig_points_df
+
+        return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num

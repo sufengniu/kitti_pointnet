@@ -9,8 +9,8 @@ import tensorflow as tf
 import os
 import os.path as osp
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 from model import AutoEncoder, StackAutoEncoder
@@ -49,7 +49,7 @@ tf.flags.DEFINE_string("partition_mode", 'grid',
                        "how to partition the sweep, grid partition, or range view partition [grid|range]")
 tf.flags.DEFINE_boolean("fb_split", False, 
                        "if split data as foreground and background")
-tf.flags.DEFINE_string("PW", '32,16', # x: width, y: length, coarse grain ,...., fine grain
+tf.flags.DEFINE_string("PW", '32,16', # x: width, y: length, 'fine grain ,...., coarse grain'
                        "number of partitions for wideth, if it is list, it becomes the multi-scale") 
 tf.flags.DEFINE_string("PL", '32,16', 
                        "number of partition for length, same as PW")
@@ -110,7 +110,7 @@ test_drives = ['0101', '0104', '0106', '0113', '0117']
 def evaluate_sweep():
     util.create_dir(FLAGS.save_path)
     if FLAGS.result_output_path is not None:
-      util.create_dir(FLAGS.result_output_path)
+        util.create_dir(FLAGS.result_output_path)
 
     # step 1 Partition
     point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
@@ -149,7 +149,7 @@ def train():
     level = len(list(map(int, FLAGS.PL.split(','))))
     print ('training grain from corase to fine')
 
-    if level > 2: # multi-scale autoencoder
+    if level >= 2: # multi-scale autoencoder
         if FLAGS.fb_split == True:
             # step 2 compression
             model_f = StackAutoEncoder(FLAGS)
