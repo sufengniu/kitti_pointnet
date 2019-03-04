@@ -766,7 +766,10 @@ class AutoEncoder():
         for i in tqdm(range(0, len(points), sweep_size)):
             s, e = i, i+sweep_size
             sweep_compress, compress_meta, compress_num, sweep_orig, orig_meta, orig_num = self.extract_sweep(points, s, e)
-            gt_points = point_cell.reconstruct_scene(sweep_compress[:,0,...], compress_meta)
+            if self.level > 1:
+                gt_points = point_cell.reconstruct_scene(sweep_compress[:,0,...], compress_meta)
+            else:
+                gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
             orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
             orig_all = np.concatenate([gt_points, orig_points], axis=0)
 
