@@ -9,8 +9,8 @@ import tensorflow as tf
 import os
 import os.path as osp
 
-# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 from model import AutoEncoder, StackAutoEncoder
@@ -118,7 +118,10 @@ def evaluate_sweep():
     level = len(list(map(int, FLAGS.PL.split(','))))
     print ('training grain from corase to fine')
 
-    model = AutoEncoder(FLAGS)
+    if level >= 2:
+        model = StackAutoEncoder(FLAGS)
+    else:
+        model = AutoEncoder(FLAGS)
     ckpt_name = FLAGS.weights
     # ckpt_path = util.create_dir(osp.join(model.save_path, 'level_%s' % (model.current_level)))
     # model.saver.restore(model.sess, os.path.join(ckpt_path, ckpt_name))
