@@ -1445,7 +1445,7 @@ class StackAutoEncoder(AutoEncoder):
             print("epoch: {}, elapsed time: {}".format(epoch, end - start))
 
             if epoch % self.save_freq == 0:
-                ckpt_path = util.create_dir(osp.join(self.save_path, 'level_1'))
+                ckpt_path = util.create_dir(osp.join(self.save_path, 'level_%s' % (self.current_level)))
                 if self.fb_split == True:
                     ckpt_name = osp.join(ckpt_path, 'model-%s-%s.ckpt' % (mode, str(epoch)))
                 else:
