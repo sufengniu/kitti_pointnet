@@ -527,7 +527,7 @@ class LoadData():
         self.latent_dim = args.latent_dim
         self.range_view = True if args.partition_mode == 'range' else False
         self.num_sample_points = 5000
-        self.load_all_kitti = (args.all_kitti==True)
+        self.load_all_kitti = (args.compress_all_kitti==True)
 
         self.num_hdmap_test = 1
         self.lower_min_elevate_angle = -24.33
