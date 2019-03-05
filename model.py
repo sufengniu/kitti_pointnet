@@ -1162,9 +1162,13 @@ class AutoEncoder():
         all_sweep = point_cell.train_cleaned_velo + point_cell.test_cleaned_velo
         print ("compression in %d blocks" % num_partition)
         partition_size = len(all_sweep)//num_partition
-        for j in range(0, num_partition):
+        pred_code = []
+        residual_code = []
+        pred_all = []
+        orig_all = []
+        for idx_p in range(0, num_partition):
             print ("\nPartitioning...")
-            sweep_s, sweep_e = j*partition_size, max((j+1)*partition_size, len(all_sweep))
+            sweep_s, sweep_e = idx_p*partition_size, max((idx_p+1)*partition_size, len(all_sweep))
             partition_sweep = all_sweep[sweep_s:sweep_e]
             points = (point_cell.partition_batch(partition_sweep, permutation=False))[0]
             if self.range_view == False:
@@ -1172,10 +1176,10 @@ class AutoEncoder():
             else:
                 sweep_size = point_cell.image_height * point_cell.image_width
 
-            pred_code = []
-            residual_code = []
-            pred_all = []
-            orig_all = []
+            pred_code_block = []
+            residual_code_block = []
+            pred_all_block = []
+            orig_all_block = []
             print ("\nCompression...\n")
             for i in tqdm(range(0, len(points), sweep_size)):
                 s, e = i, i+sweep_size
@@ -1190,7 +1194,10 @@ class AutoEncoder():
                 orig_nums = orig_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
                 total_compress_num = orig_nums.sum() + compress_nums.shape[0]*num_points
                 total_points = []
-                sweep_code = np.zeros([self.L[level_idx], self.W[level_idx], self.latent_dim])
+                if self.range_view == False:
+                    sweep_code = np.zeros([self.L[level_idx], self.W[level_idx], self.latent_dim])
+                else:
+                    sweep_code = np.zeros([point_cell.image_height, point_cell.image_width, self.latent_dim])
 
                 test_batch_size = self.batch_size # hard coded, do not change other value except [64,128,256,512]
                 for j in range(len(sweep_compress)//test_batch_size + 1):
@@ -1215,28 +1222,33 @@ class AutoEncoder():
                 # orig = np.concatenate([sweep_compress[~np.all(sweep_compress == 0, axis=2)], sweep_orig[~np.all(sweep_orig == 0, axis=2)]], axis=0)
                 total_points = np.concatenate(total_points, axis=0)
                 pred_points = point_cell.reconstruct_scene(total_points, compress_meta)
-                pred_all.append(np.concatenate([pred_points, orig_points], axis=0))
-                orig_all.append(orig_sweep)
-                pred_code.append(sweep_code)
-                residual_code.append(orig_points)
+                pred_all_block.append(np.concatenate([pred_points, orig_points], axis=0))
+                orig_all_block.append(orig_sweep)
+                pred_code_block.append(sweep_code)
+                residual_code_block.append(orig_points)
+
+            pred_all.extend(pred_all_block)
+            orig_all.extend(orig_all_block)
+            pred_code.extend(pred_code_block)
+            residual_code.extend(residual_code_block)
 
         print ("Saving compression latent code")
-        with h5py.File(self.save_path+'/code4.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/code.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(pred_code):
                 dset = f.create_dataset(str(idx), data=arr)
 
         print ("Saving uncompression points")
-        with h5py.File(self.save_path+'/aux_code4.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/aux_code.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(residual_code):
                 dset = f.create_dataset(str(idx), data=arr)
 
         print ("Saving reconstruction")
-        with h5py.File(self.save_path+'/recon4.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/recon.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(pred_all):
                 dset = f.create_dataset(str(idx), data=arr)
                         
         print ("Saving ground truth")
-        with h5py.File(self.save_path+'/orig4.h5', 'w', libver='latest') as f:
+        with h5py.File(self.save_path+'/orig.h5', 'w', libver='latest') as f:
             for idx, arr in enumerate(orig_all):
                 dset = f.create_dataset(str(idx), data=arr)
 
@@ -1433,7 +1445,7 @@ class StackAutoEncoder(AutoEncoder):
             print("epoch: {}, elapsed time: {}".format(epoch, end - start))
 
             if epoch % self.save_freq == 0:
-                ckpt_path = util.create_dir(osp.join(self.save_path, 'level_1'))
+                ckpt_path = util.create_dir(osp.join(self.save_path, 'level_%s' % (self.current_level)))
                 if self.fb_split == True:
                     ckpt_name = osp.join(ckpt_path, 'model-%s-%s.ckpt' % (mode, str(epoch)))
                 else:
