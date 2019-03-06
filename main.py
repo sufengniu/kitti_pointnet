@@ -133,7 +133,6 @@ def evaluate_sweep():
         model.compress(point_cell, ckpt_name)
     else:
         model.predict_test(point_cell, ckpt_name, FLAGS.mode)
-        point_cell.test_compression_rate()
     
 def restore_model_from_checkpoint(model):
     if FLAGS.checkpoint_path is not None and FLAGS.checkpoint_number is not None:
