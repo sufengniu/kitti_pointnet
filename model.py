@@ -608,8 +608,10 @@ class AutoEncoder():
         '''
         if self.level > 1:
             points = self.group_multi(point_cell.test_cell)
+            num_points = len(points[0])
         else:
             points = point_cell.test_cell[0]
+            num_points = len(points)
 
         if self.range_view == False:
             sweep_size = self.L[0] * self.W[0]
@@ -621,7 +623,7 @@ class AutoEncoder():
         save_mean_part, save_var_part, save_mse_part = [], [], []
         test_batch_size = self.batch_size
 
-        for i in tqdm(range(0, len(points[0]), sweep_size)):
+        for i in tqdm(range(0, num_points, sweep_size)):
             s, e = i, i+sweep_size
             sweep_compress, compress_meta, compress_num, sweep_orig, orig_meta, orig_num = self.extract_sweep(points, s, e)
             if self.level > 1:
@@ -748,6 +750,8 @@ class AutoEncoder():
                                                          np.array(save_var_part).mean(), 
                                                          np.array(save_mse_part).mean()))
 
+        cell_rate, sweep_rate = point_cell.test_compression_rate()
+
         emd_all = ['emd_all', np.array(save_emd_all).mean()]
         chamfer_all = ['chamfer_all', np.array(save_chamfer_all).mean()]
         mean_all = ['mean_all', np.array(save_mean_all).mean()]
@@ -758,11 +762,13 @@ class AutoEncoder():
         mean_part = ['mean_part', np.array(save_mean_part).mean()]
         var_part = ['var_part', np.array(save_var_part).mean()]
         mse_part = ['mse_part', np.array(save_mse_part).mean()]
+        cell_rate = ['cell_compression_rate', cell_rate]
+        sweep_rate = ['sweep_compression_rate', sweep_rate]
 
         print("self.result_output_path: {}".format(self.result_output_path))
-        np.savetxt(self.result_output_path + '/result.csv', (emd_all, chamfer_all, mean_all, var_all, mse_all, emd_part, chamfer_part, mean_part, var_part, mse_part), delimiter=',', fmt='%s')
-
-
+        np.savetxt(self.result_output_path + '/result.csv', (emd_all, chamfer_all, 
+                    mean_all, var_all, mse_all, emd_part, chamfer_part, mean_part, 
+                    var_part, mse_part, cell_rate, sweep_rate), delimiter=',', fmt='%s')
 
     def plot_hdmap(self, point_cell, center, ckpt_name, mode, num_points=6, level_idx=0):
         '''
@@ -1505,4 +1511,3 @@ class StackAutoEncoder(AutoEncoder):
         orig_meta = orig_points_df
 
         return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
-

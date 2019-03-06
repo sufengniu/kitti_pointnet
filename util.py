@@ -969,6 +969,7 @@ class LoadData():
             sweep_rate_record.append(sweep_rate)
         print ('average cell compression rate: %.6f' % (np.mean(cell_rate_record)))
         print ('average sweep compression rate: %.6f' % (np.mean(sweep_rate_record)))
+        return np.mean(cell_rate_record), np.mean(sweep_rate_record)
 
     def calculate_compression_rate(self, sample_points):
         compressed_cell = sample_points[sample_points['compressed']==True]
