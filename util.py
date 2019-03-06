@@ -964,7 +964,7 @@ class LoadData():
                 sweep_cell = self.partition_single_range(sweep, i)
             else:
                 sweep_cell = self.partition_single(sweep, i)
-            cell_rate, sweep_rate = self.calculate_compression_rate(sweep_cell[-1]) # only calculate compression on the finest scale
+            cell_rate, sweep_rate = self.calculate_compression_rate(sweep_cell[0]) # only calculate compression on the finest scale
             cell_rate_record.append(cell_rate)
             sweep_rate_record.append(sweep_rate)
         print ('average cell compression rate: %.6f' % (np.mean(cell_rate_record)))

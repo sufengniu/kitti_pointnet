@@ -621,7 +621,7 @@ class AutoEncoder():
         save_mean_part, save_var_part, save_mse_part = [], [], []
         test_batch_size = self.batch_size
 
-        for i in tqdm(range(0, len(points), sweep_size)):
+        for i in tqdm(range(0, len(points[0]), sweep_size)):
             s, e = i, i+sweep_size
             sweep_compress, compress_meta, compress_num, sweep_orig, orig_meta, orig_num = self.extract_sweep(points, s, e)
             if self.level > 1:
