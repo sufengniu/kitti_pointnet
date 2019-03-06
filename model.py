@@ -1511,4 +1511,3 @@ class StackAutoEncoder(AutoEncoder):
         orig_meta = orig_points_df
 
         return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
-                                                                                                            
