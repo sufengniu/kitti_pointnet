@@ -187,7 +187,7 @@ def train():
 
     ckpt_name = FLAGS.weights
 
-def test():
+def compression():
 
     point_cell = util.LoadData(args=FLAGS, train_drives=train_drives, test_drives=test_drives)
     sample_points = point_cell.sample_points
@@ -215,6 +215,8 @@ def test():
     util.visualize_3d_points(origin_points_train, dir='.', filename='orig_train')
     util.visualize_3d_points(reconstruction_train, dir='.', filename='recon_train')
 
+def decompression():
+    
 if __name__ == '__main__':
     if FLAGS.training == True:
         train()

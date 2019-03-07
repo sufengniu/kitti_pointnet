@@ -73,7 +73,7 @@ class AutoEncoder():
         self.result_output_path = FLAGS.result_output_path if FLAGS.result_output_path is not None else self.save_path
         self.fb_split = FLAGS.fb_split
         self.L = list(map(int, FLAGS.PL.split(',')))
-        self.W = list(map(int, FLAGS.PL.split(',')))
+        self.W = list(map(int, FLAGS.PW.split(',')))
         self.level = len(self.L)
         self.dataset = FLAGS.dataset
         self.load_prestored_data = FLAGS.load_prestored_data
@@ -98,6 +98,12 @@ class AutoEncoder():
         self.pooling = FLAGS.pooling
         self.top_k = FLAGS.top_k
         self.device_batch_size = int(self.batch_size / self.num_gpus)
+
+        self.num_lasers = self.L # original 64
+        self.group_num_lasers = 8 # can tune
+        self.image_height = [int(nl / self.group_num_lasers) for nl in self.num_lasers] # image height is PL
+        self.image_width = self.W # original 64
+
         assert(self.batch_size % self.num_gpus == 0)
         self.num_sample_points = 1500
         if FLAGS.mode != "encoder" and FLAGS.mode != "decoder":
@@ -956,7 +962,7 @@ class AutoEncoder():
         return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
 
-    def extract_point(self, points, level_idx=1):
+    def extract_point(self, points, level_idx=0):
         level_points = points[level_idx]
         sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['points'])
@@ -1253,7 +1259,7 @@ class StackAutoEncoder(AutoEncoder):
 
     def train(self, point_cell):
 
-        level_idx = 1
+        level_idx = 0
         train_point, valid_point, test_point, \
         train_meta, valid_meta, test_meta = self.preprocess(point_cell)
 
@@ -1449,23 +1455,35 @@ class StackAutoEncoder(AutoEncoder):
 
     def group_multi(self, points):
         print ("grouping multi scale cells...")
-        total_sweep_size = self.L[0]*self.W[0]
+        if self.range_view == True:
+            total_sweep_size = self.image_height[0]*self.image_width[0]
+        else:
+            total_sweep_size = self.L[0]*self.W[0]
         num_sweeps = int(points[0].shape[0] / total_sweep_size)
         stacked_points = [np.array(list(points[0].as_matrix(columns=['stacked']).squeeze()))]
         if stacked_points[0].shape != np.array(list(points[0].as_matrix(columns=['points']).squeeze())).shape:
             return points
         stacked_num = [np.array(list(points[0].as_matrix(columns=['num_points']).squeeze()))]
         for level_idx in range(1, self.level):
-            factor = (self.L[0]//self.L[level_idx])
-            sweep_size = self.L[level_idx]*self.W[level_idx]
-            level_points = np.array(list(points[level_idx].as_matrix(columns=['points']).squeeze()))
-            level_shape = [num_sweeps, self.L[level_idx], self.W[level_idx], level_points.shape[-2], 3]
+            if self.range_view == False:
+                factor = (self.L[0]//self.L[level_idx])
+                sweep_size = self.L[level_idx]*self.W[level_idx]
+                level_points = np.array(list(points[level_idx].as_matrix(columns=['points']).squeeze()))
+                level_shape = [num_sweeps, self.L[level_idx], self.W[level_idx], level_points.shape[-2], 3]
+            else:
+                factor = (self.image_height[0]//self.image_height[level_idx])
+                sweep_size = self.image_height[level_idx]*self.image_width[level_idx]
+                level_points = np.array(list(points[level_idx].as_matrix(columns=['points']).squeeze()))
+                level_shape = [num_sweeps, self.image_height[level_idx], self.image_width[level_idx], level_points.shape[-2], 3]
             level_points = np.reshape(level_points, level_shape)
             level_points = np.repeat(np.repeat(level_points, factor, axis=1), factor, axis=2)
             stacked_points.append(np.reshape(level_points, [-1, level_shape[-2], 3]))
 
             level_num = np.array(list(points[level_idx].as_matrix(columns=['num_points']).squeeze()))
-            level_num = np.reshape(level_num, [num_sweeps, self.L[level_idx], self.W[level_idx]])
+            if self.range_view == False:
+                level_num = np.reshape(level_num, [num_sweeps, self.L[level_idx], self.W[level_idx]])
+            else:
+                level_num = np.reshape(level_num, [num_sweeps, self.image_height[level_idx], self.image_width[level_idx]])
             level_num = np.repeat(np.repeat(level_num, factor, axis=1), factor, axis=2)
             stacked_num.append(np.reshape(level_num, -1))
         stacked_points = np.stack(stacked_points)
@@ -1477,7 +1495,7 @@ class StackAutoEncoder(AutoEncoder):
 
         return points
 
-    def extract_point(self, points, level_idx = 0):
+    def extract_point(self, points, level_idx=0):
 
         points = self.group_multi(points)
         low_points = points[level_idx]

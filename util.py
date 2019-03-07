@@ -515,7 +515,7 @@ class LoadData():
         self.batch_idx = 0
         self.basedir = args.data_in_dir
         self.L = list(map(int, args.PL.split(',')))
-        self.W = list(map(int, args.PL.split(',')))
+        self.W = list(map(int, args.PW.split(',')))
         self.factor = self.L[1] / self.L[0] if len(self.L) > 1 else 1
         self.level = len(self.L)
         self.fb_split = args.fb_split
@@ -534,10 +534,10 @@ class LoadData():
         self.upper_min_elevate_angle = -8.33
         self.min_azimuth_angle = -180.0
         self.range_of_azimuth_angle = 360.0
-        self.num_lasers = 64
+        self.num_lasers = self.L # original 64
         self.group_num_lasers = 8 # can tune
-        self.image_height = int(self.num_lasers / self.group_num_lasers)
-        self.image_width = 64 # can tune
+        self.image_height = [int(nl / self.group_num_lasers) for nl in self.num_lasers] # image height is PL
+        self.image_width = self.W # original 64
         self.dataset = args.dataset
         
         self.columns = ['points', 'stacked', 'stacked_num', 'index', 'ratio',
@@ -861,7 +861,7 @@ class LoadData():
             multi_cell[k] = multi_cell[k].dropna(thresh=5)
         return multi_cell
 
-    def compute_range_view_image_pixel_id(self, point_cloud):
+    def compute_range_view_image_pixel_id(self, point_cloud, level_idx=0):
         '''
         input: point_cloud:  N * 3 point cloud matrix
         
@@ -880,13 +880,13 @@ class LoadData():
         upper_row_id = np.floor((elevate_angle - self.upper_min_elevate_angle)*3) + 32
         row_id = np.where(elevate_angle < self.upper_min_elevate_angle, lower_row_id, upper_row_id)
         row_id[row_id < 0] = 0
-        row_id[row_id >= self.num_lasers] = self.num_lasers - 1
+        row_id[row_id >= self.num_lasers[level_idx]] = self.num_lasers[level_idx] - 1
         row_id = row_id / self.group_num_lasers
 
         # compute row id
         inverse_range_of_azimuth_angle = 1.0 / self.range_of_azimuth_angle
-        column_id = np.floor((azimuth_angle - self.min_azimuth_angle) * self.image_width * inverse_range_of_azimuth_angle)
-        column_id[column_id==self.image_width] = 0
+        column_id = np.floor((azimuth_angle - self.min_azimuth_angle) * self.image_width[level_idx] * inverse_range_of_azimuth_angle)
+        column_id[column_id==self.image_width[level_idx]] = 0
 
         return row_id.astype(int), column_id.astype(int)
 
@@ -897,7 +897,6 @@ class LoadData():
         output: range_view_cell_points:    IMAGE_HEIGHT, IMAGE_WIDTH, MAX_POINTS_IN_A_CELL, 4 (x,y,z,intensity)
                 range_view_cell_point_num: IMAGE_HEIGHT * IMAGE_WIDTH
         '''
-        r, c = self.compute_range_view_image_pixel_id(points)
 
         # # Create a dictionary of cell information
         # cell_info = dict()
@@ -910,13 +909,14 @@ class LoadData():
 
         multi_cell = []
         for k in range(self.level):
-            index = np.arange(self.image_height*self.image_width)
+            r, c = self.compute_range_view_image_pixel_id(points, k)
+            index = np.arange(self.image_height[k]*self.image_width[k])
             cell_points = pd.DataFrame(index=index, columns=self.columns)
-            for i in range(self.image_height):
-                for j in range(self.image_width):
+            for i in range(self.image_height[k]):
+                for j in range(self.image_width[k]):
                     cell_idx = np.intersect1d(np.where(r == i)[0], np.where(c == j)[0])
                     num_points = cell_idx.shape[0]
-                    cell_pos = i*self.image_width + j
+                    cell_pos = i*self.image_width[k] + j
 
                     if num_points < self.cell_min_points[0]:
                         cell_points.iloc[cell_pos]['compressed'] = False
@@ -924,12 +924,12 @@ class LoadData():
                         cell_points.iloc[cell_pos]['compressed'] = True
 
                     if num_points == 0:
-                        cell, ratio, center = np.zeros([self.cell_max_points[0], 3]), 1.0, np.zeros(3)
-                    elif num_points > self.cell_max_points[0]: # if greater than max points, random sample
-                        sample_index = np.random.choice(num_points, self.cell_max_points[0], replace=False)
-                        cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[0])
-                    elif num_points <= self.cell_max_points[0]:
-                        new_point = np.zeros([self.cell_max_points[0], 3])
+                        cell, ratio, center = np.zeros([self.cell_max_points[k], 3]), 1.0, np.zeros(3)
+                    elif num_points > self.cell_max_points[k]: # if greater than max points, random sample
+                        sample_index = np.random.choice(num_points, self.cell_max_points[k], replace=False)
+                        cell, ratio, center = rescale(points[cell_idx][sample_index], self.cell_max_points[k])
+                    elif num_points <= self.cell_max_points[k]:
+                        new_point = np.zeros([self.cell_max_points[k], 3])
                         new_point[:num_points] = points[cell_idx]
                         cell, ratio, center = rescale(new_point, num_points)
 
