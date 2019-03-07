@@ -215,7 +215,7 @@ def compression():
     util.visualize_3d_points(origin_points_train, dir='.', filename='orig_train')
     util.visualize_3d_points(reconstruction_train, dir='.', filename='recon_train')
 
-def decompression():
+#def decompression():
     
 if __name__ == '__main__':
     if FLAGS.training == True:
