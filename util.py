@@ -534,9 +534,9 @@ class LoadData():
         self.upper_min_elevate_angle = -8.33
         self.min_azimuth_angle = -180.0
         self.range_of_azimuth_angle = 360.0
-        self.num_lasers = self.L # original 64
-        self.group_num_lasers = 8 # can tune
-        self.image_height = [int(nl / self.group_num_lasers) for nl in self.num_lasers] # image height is PL
+        self.num_lasers = 64
+        self.group_num_lasers = self.L # can tune
+        self.image_height = [int(nl / self.group_num_lasers) for nl in self.num_lasers] 
         self.image_width = self.W # original 64
         self.dataset = args.dataset
         

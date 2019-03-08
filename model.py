@@ -99,8 +99,8 @@ class AutoEncoder():
         self.top_k = FLAGS.top_k
         self.device_batch_size = int(self.batch_size / self.num_gpus)
 
-        self.num_lasers = self.L # original 64
-        self.group_num_lasers = 8 # can tune
+        self.num_lasers = 64
+        self.group_num_lasers = self.L # can tune
         self.image_height = [int(nl / self.group_num_lasers) for nl in self.num_lasers] # image height is PL
         self.image_width = self.W # original 64
 
