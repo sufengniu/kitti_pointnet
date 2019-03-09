@@ -536,7 +536,7 @@ class LoadData():
         self.range_of_azimuth_angle = 360.0
         self.num_lasers = 64
         self.group_num_lasers = self.L # can tune
-        self.image_height = [int(nl / self.group_num_lasers) for nl in self.num_lasers] 
+        self.image_height = [int(self.num_lasers / gnl) for gnl in self.group_num_lasers]
         self.image_width = self.W # original 64
         self.dataset = args.dataset
         
@@ -880,8 +880,8 @@ class LoadData():
         upper_row_id = np.floor((elevate_angle - self.upper_min_elevate_angle)*3) + 32
         row_id = np.where(elevate_angle < self.upper_min_elevate_angle, lower_row_id, upper_row_id)
         row_id[row_id < 0] = 0
-        row_id[row_id >= self.num_lasers[level_idx]] = self.num_lasers[level_idx] - 1
-        row_id = row_id / self.group_num_lasers
+        row_id[row_id >= self.num_lasers] = self.num_lasers - 1
+        row_id = row_id / self.group_num_lasers[level_idx]
 
         # compute row id
         inverse_range_of_azimuth_angle = 1.0 / self.range_of_azimuth_angle

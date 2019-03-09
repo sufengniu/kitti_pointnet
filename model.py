@@ -101,7 +101,7 @@ class AutoEncoder():
 
         self.num_lasers = 64
         self.group_num_lasers = self.L # can tune
-        self.image_height = [int(nl / self.group_num_lasers) for nl in self.num_lasers] # image height is PL
+        self.image_height = [int(self.num_lasers / gnl) for gnl in self.group_num_lasers] # image height is PL
         self.image_width = self.W # original 64
 
         assert(self.batch_size % self.num_gpus == 0)
@@ -622,7 +622,7 @@ class AutoEncoder():
         if self.range_view == False:
             sweep_size = self.L[0] * self.W[0]
         else:
-            sweep_size = point_cell.image_height * point_cell.image_width
+            sweep_size = point_cell.image_height[0] * point_cell.image_width[0]
         save_emd_all, save_chamfer_all = [], []
         save_mean_all, save_var_all, save_mse_all = [], [], []
         save_emd_part, save_chamfer_part = [], []
@@ -790,7 +790,7 @@ class AutoEncoder():
         if self.range_view == False:
             sweep_size = self.L[level_idx] * self.W[level_idx]
         else:
-            sweep_size = point_cell.image_height * point_cell.image_width
+            sweep_size = point_cell.image_height[level_idx] * point_cell.image_width[level_idx]
 
         hd_map = []
         hd_map_pred = []
@@ -870,7 +870,7 @@ class AutoEncoder():
         if self.range_view == False:
             sweep_size = self.L[level_idx] * self.W[level_idx]
         else:
-            sweep_size = point_cell.image_height * point_cell.image_width
+            sweep_size = point_cell.image_height[level_idx] * point_cell.image_width[level_idx]
         s, e = idx*sweep_size, (idx+1)*sweep_size
         sweep_compress, compress_meta, sweep_orig, orig_meta = self.extract_sweep(points, s, e, level_idx)
         gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
@@ -1045,7 +1045,7 @@ class AutoEncoder():
             if self.range_view == False:
                 sweep_size = self.L[level_idx] * self.W[level_idx]
             else:
-                sweep_size = point_cell.image_height * point_cell.image_width
+                sweep_size = point_cell.image_height[level_idx] * point_cell.image_width[level_idx]
 
             pred_code_block = []
             residual_code_block = []
@@ -1068,7 +1068,7 @@ class AutoEncoder():
                 if self.range_view == False:
                     sweep_code = np.zeros([self.L[level_idx], self.W[level_idx], self.latent_dim])
                 else:
-                    sweep_code = np.zeros([point_cell.image_height, point_cell.image_width, self.latent_dim])
+                    sweep_code = np.zeros([point_cell.image_height[level_idx], point_cell.image_width[level_idx], self.latent_dim])
 
                 test_batch_size = self.batch_size # hard coded, do not change other value except [64,128,256,512]
                 for j in range(len(sweep_compress)//test_batch_size + 1):
