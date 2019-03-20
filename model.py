@@ -1155,7 +1155,7 @@ class StackAutoEncoder(AutoEncoder):
         combined_code = self._fuse(stacked_code)
 
         # ------- decoder ------- 
-        x_reconstr = self._decoder(combined_code, mask[0], bn_decay, name_scope='decoder')
+        x_reconstr = self._decoder(combined_code, mask[-1], bn_decay, name_scope='decoder')
 
         if self.rotation == True:
             # rotate_matrix = tf.stop_gradient(tf.matrix_inverse(transform))
@@ -1217,12 +1217,12 @@ class StackAutoEncoder(AutoEncoder):
 
                         x_reconstr, code = self._ae(pc_batch, mask_batch, bn_decay)
 
-                        match = approx_match(pc_batch[0], x_reconstr)
-                        emd_loss = tf.reduce_mean(match_cost(pc_batch[0], x_reconstr, match))
+                        match = approx_match(pc_batch[-1], x_reconstr)
+                        emd_loss = tf.reduce_mean(match_cost(pc_batch[-1], x_reconstr, match))
             
                         # self.chamfer_loss = calculate_chamfer(self.x_reconstr, self.pc)
                         chamfer_loss = tf.reduce_mean(tf.map_fn(lambda x: calculate_chamfer(x[0], x[1], x[2]), 
-                                                                     (x_reconstr, pc_batch[0], meta_batch[0]), dtype=tf.float32))
+                                                                     (x_reconstr, pc_batch[-1], meta_batch[-1]), dtype=tf.float32))
                         #  -------  loss + optimization  ------- 
                         if self.loss_type == "emd":
                             reconstruction_loss = emd_loss
@@ -1330,7 +1330,7 @@ class StackAutoEncoder(AutoEncoder):
 
                 def visualize_sample(sample_points, sample_meta, sample_num, orig_points, orig_meta, filename=None):
                     
-                    meta_nums = sample_meta['num_points'].values.astype(int)
+                    meta_nums = sample_meta['stacked_num'].str[1].values.astype(int)
                     parent_nums = sample_num
                     if (meta_nums >= self.cell_min_points[0]).all():
 
@@ -1367,7 +1367,7 @@ class StackAutoEncoder(AutoEncoder):
                         raise
 
                     reconstruction_sample = point_cell.reconstruct_scene(sample_generated, sample_meta)
-                    reconstruction_orig = point_cell.reconstruct_scene(orig_points, orig_meta)
+                    reconstruction_orig = point_cell.reconstruct_scene(orig_points[:,-1,...], orig_meta)
                     reconstruction = np.concatenate([reconstruction_sample, reconstruction_orig], 0)
 
                     if filename == None:
@@ -1376,7 +1376,8 @@ class StackAutoEncoder(AutoEncoder):
                         sweep = point_cell.test_f_sweep
                     elif filename == 'background':
                         sweep = point_cell.test_b_sweep
-
+                    
+                    print("----------test----------: {}, {}".format(reconstruction.shape, sweep.shape))
                     mean, var, mse = util.sweep_stat(reconstruction, sweep)
                     print ('sampled sweep emd loss: {}, chamfer loss: {}, MSE: {}'.format(sample_emd,
                                                                                           sample_chamfer,
@@ -1455,58 +1456,59 @@ class StackAutoEncoder(AutoEncoder):
 
     def group_multi(self, points):
         print ("grouping multi scale cells...")
+        level_idx = -1
         if self.range_view == True:
-            total_sweep_size = self.image_height[0]*self.image_width[0]
+            total_sweep_size = self.image_height[level_idx]*self.image_width[level_idx]
         else:
-            total_sweep_size = self.L[0]*self.W[0]
-        num_sweeps = int(points[0].shape[0] / total_sweep_size)
+            total_sweep_size = self.L[level_idx]*self.W[level_idx]
+        num_sweeps = int(points[level_idx].shape[0] / total_sweep_size)
         stacked_points = [np.array(list(points[0].as_matrix(columns=['stacked']).squeeze()))]
         if stacked_points[0].shape != np.array(list(points[0].as_matrix(columns=['points']).squeeze())).shape:
             return points
         stacked_num = [np.array(list(points[0].as_matrix(columns=['num_points']).squeeze()))]
-        for level_idx in range(1, self.level):
+        for l_idx in range(1, self.level):
             if self.range_view == False:
-                factor = (self.L[0]//self.L[level_idx])
-                sweep_size = self.L[level_idx]*self.W[level_idx]
-                level_points = np.array(list(points[level_idx].as_matrix(columns=['points']).squeeze()))
-                level_shape = [num_sweeps, self.L[level_idx], self.W[level_idx], level_points.shape[-2], 3]
+                factor = (self.L[0]//self.L[l_idx])
+                sweep_size = self.L[l_idx]*self.W[l_idx]
+                level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
+                level_shape = [num_sweeps, self.L[l_idx], self.W[l_idx], level_points.shape[-2], 3]
             else:
-                factor = (self.image_height[0]//self.image_height[level_idx])
-                sweep_size = self.image_height[level_idx]*self.image_width[level_idx]
-                level_points = np.array(list(points[level_idx].as_matrix(columns=['points']).squeeze()))
-                level_shape = [num_sweeps, self.image_height[level_idx], self.image_width[level_idx], level_points.shape[-2], 3]
+                factor = (self.image_height[0]//self.image_height[l_idx])
+                sweep_size = self.image_height[l_idx]*self.image_width[l_idx]
+                level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
+                level_shape = [num_sweeps, self.image_height[l_idx], self.image_width[l_idx], level_points.shape[-2], 3]
             level_points = np.reshape(level_points, level_shape)
             level_points = np.repeat(np.repeat(level_points, factor, axis=1), factor, axis=2)
             stacked_points.append(np.reshape(level_points, [-1, level_shape[-2], 3]))
 
-            level_num = np.array(list(points[level_idx].as_matrix(columns=['num_points']).squeeze()))
+            level_num = np.array(list(points[l_idx].as_matrix(columns=['num_points']).squeeze()))
             if self.range_view == False:
-                level_num = np.reshape(level_num, [num_sweeps, self.L[level_idx], self.W[level_idx]])
+                level_num = np.reshape(level_num, [num_sweeps, self.L[l_idx], self.W[l_idx]])
             else:
-                level_num = np.reshape(level_num, [num_sweeps, self.image_height[level_idx], self.image_width[level_idx]])
+                level_num = np.reshape(level_num, [num_sweeps, self.image_height[l_idx], self.image_width[l_idx]])
             level_num = np.repeat(np.repeat(level_num, factor, axis=1), factor, axis=2)
             stacked_num.append(np.reshape(level_num, -1))
         stacked_points = np.stack(stacked_points)
         stacked_num = np.stack(stacked_num)
 
-        for i in range(points[0].shape[0]):
-            points[0].iloc[i]['stacked'] = stacked_points[:,i,...]
-            points[0].iloc[i]['stacked_num'] = stacked_num[:,i]
+        for i in range(points[0].shape[0]): # change -1 to 0
+            points[0].iloc[i]['stacked'] = stacked_points[:,i,...] # change -1 to 0
+            points[0].iloc[i]['stacked_num'] = stacked_num[:,i] # change -1 to 0
 
         return points
 
     def extract_point(self, points, level_idx=0):
-
+        # level_idx = -1 # change -1 to 0
         points = self.group_multi(points)
         low_points = points[level_idx]
-        sample_points_df = low_points[low_points['num_points'] >= self.cell_min_points[level_idx]]
+        sample_points_df = low_points[low_points['stacked_num'].str[1] >= self.cell_min_points[level_idx]]
         parent_points = sample_points_df.as_matrix(columns=['stacked'])
         parent_points = np.array(list(parent_points.squeeze()))
         sample_num = np.array(list(sample_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         sample_meta = sample_points_df
 
-        orig_points_df = low_points[(low_points['num_points']<self.cell_min_points[level_idx]) & (low_points['num_points']>0)]
-        orig_points = orig_points_df.as_matrix(columns=['points'])
+        orig_points_df = low_points[(low_points['stacked_num'].str[1] < self.cell_min_points[level_idx]) & (low_points['stacked_num'].str[1] > 0)]
+        orig_points = orig_points_df.as_matrix(columns=['stacked'])
         orig_points = np.array(list(orig_points.squeeze()))
         orig_num = np.array(list(orig_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         orig_meta = orig_points_df
