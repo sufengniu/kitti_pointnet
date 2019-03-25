@@ -1297,7 +1297,7 @@ class StackAutoEncoder(AutoEncoder):
                     record_loss.append(emd_loss)
                 elif self.loss_type == 'chamfer':
                     record_loss.append(chamfer_loss)
-                mean, var, mse = util.dist_stat(recon, X[:,0,:,:], meta[:,0], self.origin_num_points[0])
+                mean, var, mse = util.dist_stat(recon, X[:,-1,:,:], meta[:,-1], self.origin_num_points[-1])
                 record_mean.append(mean)
                 record_var.append(var)
                 record_mse.append(mse)
@@ -1377,7 +1377,6 @@ class StackAutoEncoder(AutoEncoder):
                     elif filename == 'background':
                         sweep = point_cell.test_b_sweep
                     
-                    print("----------test----------: {}, {}".format(reconstruction.shape, sweep.shape))
                     mean, var, mse = util.sweep_stat(reconstruction, sweep)
                     print ('sampled sweep emd loss: {}, chamfer loss: {}, MSE: {}'.format(sample_emd,
                                                                                           sample_chamfer,
@@ -1425,8 +1424,8 @@ class StackAutoEncoder(AutoEncoder):
 
             vel, vcl, recon = self.sess.run([self.emd_loss, self.chamfer_loss, self.x_reconstr], feed_dict)
             mean, var, mse = util.dist_stat(recon, 
-                                            valid_point[valid_s:valid_e,0,...], 
-                                            valid_meta[valid_s:valid_e,0], self.origin_num_points[1])
+                                            valid_point[valid_s:valid_e,-1,...], 
+                                            valid_meta[valid_s:valid_e,-1], self.origin_num_points[-1])
             mean_arr.append(mean)
             var_arr.append(var)
             mse_arr.append(mse)
@@ -1468,17 +1467,19 @@ class StackAutoEncoder(AutoEncoder):
         stacked_num = [np.array(list(points[0].as_matrix(columns=['num_points']).squeeze()))]
         for l_idx in range(1, self.level):
             if self.range_view == False:
-                factor = (self.L[0]//self.L[l_idx])
+                factor_L = (self.L[0]//self.L[l_idx])
+                factor_W = (self.W[0]//self.W[l_idx])
                 sweep_size = self.L[l_idx]*self.W[l_idx]
                 level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
                 level_shape = [num_sweeps, self.L[l_idx], self.W[l_idx], level_points.shape[-2], 3]
             else:
-                factor = (self.image_height[0]//self.image_height[l_idx])
+                factor_L = (self.image_height[0]//self.image_height[l_idx])
+                factor_W = (self.image_width[0]//self.image_width[l_idx])
                 sweep_size = self.image_height[l_idx]*self.image_width[l_idx]
                 level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
                 level_shape = [num_sweeps, self.image_height[l_idx], self.image_width[l_idx], level_points.shape[-2], 3]
             level_points = np.reshape(level_points, level_shape)
-            level_points = np.repeat(np.repeat(level_points, factor, axis=1), factor, axis=2)
+            level_points = np.repeat(np.repeat(level_points, factor_L, axis=1), factor_W, axis=2)
             stacked_points.append(np.reshape(level_points, [-1, level_shape[-2], 3]))
 
             level_num = np.array(list(points[l_idx].as_matrix(columns=['num_points']).squeeze()))
@@ -1486,7 +1487,7 @@ class StackAutoEncoder(AutoEncoder):
                 level_num = np.reshape(level_num, [num_sweeps, self.L[l_idx], self.W[l_idx]])
             else:
                 level_num = np.reshape(level_num, [num_sweeps, self.image_height[l_idx], self.image_width[l_idx]])
-            level_num = np.repeat(np.repeat(level_num, factor, axis=1), factor, axis=2)
+            level_num = np.repeat(np.repeat(level_num, factor_L, axis=1), factor_W, axis=2)
             stacked_num.append(np.reshape(level_num, -1))
         stacked_points = np.stack(stacked_points)
         stacked_num = np.stack(stacked_num)

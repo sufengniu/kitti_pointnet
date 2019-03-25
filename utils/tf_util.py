@@ -761,47 +761,47 @@ def point_iteration(input, state, lstm):
 
 def magic(point_cloud, is_training, n_filters, k, bn_decay=None, iterative=False, step=3):
 
-    net = tf_util.magic_conv(point_cloud,
-                             is_training=is_training,
-                             n_filters=n_filters[0],
-                             k=k,
-                             bn_decay=bn_decay,
-                             iterative=iterative,
-                             step=step,
-                             name='magic1')
+    net = magic_conv(point_cloud,
+                     is_training=is_training,
+                     n_filters=n_filters[0],
+                     k=k,
+                     bn_decay=bn_decay,
+                     iterative=iterative,
+                     step=step,
+                     name='magic1')
     net1 = tf.expand_dims(net, -2)
 
-    net = tf_util.magic_conv(net,
-                             is_training=is_training,
-                             n_filters=n_filters[1],
-                             k=k,
-                             bn_decay=bn_decay,
-                             iterative=iterative,
-                             step=step,
-                             name='magic2')
+    net = magic_conv(net,
+                     is_training=is_training,
+                     n_filters=n_filters[1],
+                     k=k,
+                     bn_decay=bn_decay,
+                     iterative=iterative,
+                     step=step,
+                     name='magic2')
     net2 = tf.expand_dims(net, -2)
 
-    net = tf_util.magic_conv(net,
-                             is_training=is_training,
-                             n_filters=n_filters[2],
-                             k=k,
-                             bn_decay=bn_decay,
-                             iterative=iterative,
-                             step=step,
-                             name='magic3')
+    net = magic_conv(net,
+                     is_training=is_training,
+                     n_filters=n_filters[2],
+                     k=k,
+                     bn_decay=bn_decay,
+                     iterative=iterative,
+                     step=step,
+                     name='magic3')
     net3 = tf.expand_dims(net, -2)
 
-    net = tf_util.magic_conv(net,
-                             is_training=is_training,
-                             n_filters=n_filters[3],
-                             k=k,
-                             bn_decay=bn_decay,
-                             iterative=iterative,
-                             step=step,
-                             name='magic4')
+    net = magic_conv(net,
+                     is_training=is_training,
+                     n_filters=n_filters[3],
+                     k=k,
+                     bn_decay=bn_decay,
+                     iterative=iterative,
+                     step=step,
+                     name='magic4')
     net4 = tf.expand_dims(net, -2)
 
-    net = tf_util.conv2d(tf.concat([net1, net2, net3, net4], axis=-1),
+    net = conv2d(tf.concat([net1, net2, net3, net4], axis=-1),
                          n_filters[4], [1,1], padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
                          scope='agg', bn_decay=bn_decay)
@@ -863,7 +863,7 @@ def dgcnn_path(edge_feature, n_filters, is_training, bn_decay, activation_functi
             net = conv2d(edge_feature, n_filter, [1,1],
                          padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
-                         activation_function=activation_function, 
+                         activation_fn=activation_function, 
                          scope='dgcnn_'+str(idx), bn_decay=bn_decay)
             net = tf.reduce_max(net, axis=-2, keepdims=True)
             edge_feature = net
@@ -898,7 +898,7 @@ def inception_dgcnn(point_cloud, is_training, n_filters, max_k, activation_funct
     net = tf_util.conv2d(tf.concat([net1, net2], axis=-1), n_filters[-1], [1, 1], 
                          padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
-                         activation_function=activation_function,
+                         activation_fn=activation_function,
                          scope='agg', bn_decay=bn_decay)
     return tf.squeeze(net, -2)
 
@@ -919,7 +919,7 @@ def dgcnn(point_cloud, is_training, n_filters, k, activation_function=tf.nn.relu
     net = conv2d(edge_feature, n_filters[0], [1,1],
                          padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
-                         activation_function=activation_function,
+                         activation_fn=activation_function,
                          scope='dgcnn1', bn_decay=bn_decay)
     net1 = tf.reduce_max(net, axis=-2, keepdims=True)
     net = tf.squeeze(net1, -2)
@@ -931,7 +931,7 @@ def dgcnn(point_cloud, is_training, n_filters, k, activation_function=tf.nn.relu
     net = conv2d(edge_feature, n_filters[1], [1,1],
                          padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
-                         activation_function=activation_function,
+                         activation_fn=activation_function,
                          scope='dgcnn2', bn_decay=bn_decay)
     net2 = tf.reduce_max(net, axis=-2, keepdims=True)
     net = tf.squeeze(net2, -2)
@@ -943,7 +943,7 @@ def dgcnn(point_cloud, is_training, n_filters, k, activation_function=tf.nn.relu
     net = conv2d(edge_feature, n_filters[2], [1,1],
                          padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
-                         activation_function=activation_function,
+                         activation_fn=activation_function,
                          scope='dgcnn3', bn_decay=bn_decay)
     net3 = tf.reduce_max(net, axis=-2, keepdims=True)
     net = tf.squeeze(net3, -2)
@@ -955,14 +955,14 @@ def dgcnn(point_cloud, is_training, n_filters, k, activation_function=tf.nn.relu
     net = conv2d(edge_feature, n_filters[3], [1,1],
                          padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
-                         activation_function=activation_function,
+                         activation_fn=activation_function,
                          scope='dgcnn4', bn_decay=bn_decay)
     net4 = tf.reduce_max(net, axis=-2, keepdims=True)
     
     net = conv2d(tf.concat([net1, net2, net3, net4], axis=-1), n_filters[4], [1, 1], 
                          padding='VALID', stride=[1,1],
                          bn=True, is_training=is_training,
-                         activation_function=activation_function,
+                         activation_fn=activation_function,
                          scope='agg', bn_decay=bn_decay)
     net = tf.squeeze(net, -2)
     return net

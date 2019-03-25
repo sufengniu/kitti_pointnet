@@ -32,6 +32,7 @@ from sklearn import linear_model, datasets
 from sklearn.cluster import KMeans
 from sklearn.cluster import SpectralClustering
 from sklearn import mixture
+from sklearn.neighbors import NearestNeighbors
 
 from external.structural_losses.tf_nndistance import nn_distance
 from external.structural_losses.tf_approxmatch import approx_match, match_cost
@@ -983,11 +984,14 @@ class LoadData():
         total_original = compressed_num + original_num
         return latent_num/compressed_num, total_compressed/total_original
 
-    def reconstruct_scene(self, cell_points, cell_info):
+    def reconstruct_scene(self, cell_points, cell_info, stacked=False):
         scene = []
         for i in range(len(cell_info)):
             cell = cell_points[i]
-            num_points = cell_info.iloc[i]['num_points']
+            if stacked == True:
+                num_points = cell_info.iloc[i]['stacked_num'][-1]
+            else:
+                num_points = cell_info.iloc[i]['num_points']
             scaled_cell = cell[:num_points] / cell_info.iloc[i]['ratio']
             scaled_cell += cell_info.iloc[i]['center']
             scene.append(scaled_cell)
@@ -1306,80 +1310,7 @@ def set_axes_equal(ax):
     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
 
 
-def visualize_3d_points(dataset, points=1.0, elev=40, azim=75, dir='.', filename='sample'):
-    """
-    Displays statistics for a single frame. 3D plot of the lidar point cloud data and point cloud
-    projections to various planes.
-    
-    Parameters
-    ----------
-    dataset         : `raw` dataset.
-    points          : Fraction of lidar points to use. Defaults to `0.2`, e.g. 20%.
-    """
-
-    dataset_velo = dataset
-    
-    points_step = int(1. / points)
-    point_size = 0.05 * (1. / points)
-    velo_range = range(0, dataset_velo.shape[0], points_step)
-    velo_frame = dataset_velo[velo_range, :]      
-    def draw_point_cloud(ax, title, axes=[0, 1, 2], xlim3d=None, ylim3d=None, zlim3d=None):
-        """
-        Convenient method for drawing various point cloud projections as a part of frame statistics.
-        """
-        ax.scatter(*np.transpose(velo_frame[:, axes]), s=point_size, cmap='gray')
-        ax.set_title(title)
-        ax.set_xlabel('{} axis'.format(axes_str[axes[0]]))
-        ax.set_ylabel('{} axis'.format(axes_str[axes[1]]))
-        if len(axes) > 2:
-            ax.set_xlim3d(*axes_limits[axes[0]])
-            ax.set_ylim3d(*axes_limits[axes[1]])
-            ax.set_zlim3d(*axes_limits[axes[2]])
-            ax.set_zlabel('{} axis'.format(axes_str[axes[2]]))
-        else:
-            # ax.set_xlim(-30, 30)
-            # ax.set_ylim(-30, 30)
-            ax.set_xlim(*axes_limits[axes[0]])
-            ax.set_ylim(*axes_limits[axes[1]])
-        # User specified limits
-        if xlim3d!=None:
-            ax.set_xlim3d(xlim3d)
-        if ylim3d!=None:
-            ax.set_ylim3d(ylim3d)
-        if zlim3d!=None:
-            ax.set_zlim3d(zlim3d)
-                        
-    # Draw point cloud data as 3D plot
-    f2 = plt.figure(figsize=(15, 8))
-    ax2 = f2.add_subplot(111, projection='3d')
-    ax2.axes.set_aspect('equal')
-    ax2.view_init(elev=elev, azim=azim)
-    draw_point_cloud(ax2, 'Velodyne scan')
-    # draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-40,40), ylim3d=(-100,100), zlim3d=(-2,10))
-    # draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-20,20))
-    # set_axes_equal(ax2)
-    plt.savefig(dir+'/3d_point_cloud_'+filename)
-    
-    # Draw point cloud data as plane projections
-    f, ax3 = plt.subplots(3, 1, figsize=(15, 25))
-    draw_point_cloud(
-        ax3[0], 
-        'Velodyne scan, XZ projection (Y = 0), the car is moving in direction left to right', 
-        axes=[0, 2] # X and Z axes
-    )
-    draw_point_cloud(
-        ax3[1], 
-        'Velodyne scan, XY projection (Z = 0), the car is moving in direction left to right', 
-        axes=[0, 1] # X and Y axes
-    )
-    draw_point_cloud(
-        ax3[2], 
-        'Velodyne scan, YZ projection (X = 0), the car is moving towards the graph plane', 
-        axes=[1, 2] # Y and Z axes
-    )
-    plt.savefig(dir+'/2d_point_cloud_'+filename)
-
-# def visualize_3d_points(dataset, points=1.0, dir='.', filename='sample'):
+# def visualize_3d_points(dataset, points=1.0, elev=40, azim=75, dir='.', filename='sample'):
 #     """
 #     Displays statistics for a single frame. 3D plot of the lidar point cloud data and point cloud
 #     projections to various planes.
@@ -1400,7 +1331,6 @@ def visualize_3d_points(dataset, points=1.0, elev=40, azim=75, dir='.', filename
 #         """
 #         Convenient method for drawing various point cloud projections as a part of frame statistics.
 #         """
-#         ax.grid(False)
 #         ax.scatter(*np.transpose(velo_frame[:, axes]), s=point_size, cmap='gray')
 #         ax.set_title(title)
 #         ax.set_xlabel('{} axis'.format(axes_str[axes[0]]))
@@ -1422,14 +1352,16 @@ def visualize_3d_points(dataset, points=1.0, elev=40, azim=75, dir='.', filename
 #             ax.set_ylim3d(ylim3d)
 #         if zlim3d!=None:
 #             ax.set_zlim3d(zlim3d)
-        
-
+                        
 #     # Draw point cloud data as 3D plot
 #     f2 = plt.figure(figsize=(15, 8))
-#     ax2 = f2.add_subplot(111, projection='3d')        
-#     # ax2 = Axes3D(f2)
-#     ax2.view_init(elev=20)
-#     draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-10,30))
+#     ax2 = f2.add_subplot(111, projection='3d')
+#     ax2.axes.set_aspect('equal')
+#     ax2.view_init(elev=elev, azim=azim)
+#     draw_point_cloud(ax2, 'Velodyne scan')
+#     # draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-40,40), ylim3d=(-100,100), zlim3d=(-2,10))
+#     # draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-20,20))
+#     # set_axes_equal(ax2)
 #     plt.savefig(dir+'/3d_point_cloud_'+filename)
     
 #     # Draw point cloud data as plane projections
@@ -1450,6 +1382,75 @@ def visualize_3d_points(dataset, points=1.0, elev=40, azim=75, dir='.', filename
 #         axes=[1, 2] # Y and Z axes
 #     )
 #     plt.savefig(dir+'/2d_point_cloud_'+filename)
+
+def visualize_3d_points(dataset, points=1.0, dir='.', filename='sample'):
+    """
+    Displays statistics for a single frame. 3D plot of the lidar point cloud data and point cloud
+    projections to various planes.
+    
+    Parameters
+    ----------
+    dataset         : `raw` dataset.
+    points          : Fraction of lidar points to use. Defaults to `0.2`, e.g. 20%.
+    """
+
+    dataset_velo = dataset
+    
+    points_step = int(1. / points)
+    point_size = 0.05 * (1. / points)
+    velo_range = range(0, dataset_velo.shape[0], points_step)
+    velo_frame = dataset_velo[velo_range, :]      
+    def draw_point_cloud(ax, title, axes=[0, 1, 2], xlim3d=None, ylim3d=None, zlim3d=None):
+        """
+        Convenient method for drawing various point cloud projections as a part of frame statistics.
+        """
+        # ax.grid(False)
+        ax.scatter(*np.transpose(velo_frame[:, axes]), s=point_size, cmap='gray')
+        ax.set_title(title)
+        ax.set_xlabel('{} axis'.format(axes_str[axes[0]]))
+        ax.set_ylabel('{} axis'.format(axes_str[axes[1]]))
+        if len(axes) > 2:
+            ax.set_xlim3d(*axes_limits[axes[0]])
+            ax.set_ylim3d(*axes_limits[axes[1]])
+            ax.set_zlim3d(*axes_limits[axes[2]])
+            ax.set_zlabel('{} axis'.format(axes_str[axes[2]]))
+        else:
+            ax.set_xlim(*axes_limits[axes[0]])
+            ax.set_ylim(*axes_limits[axes[1]])
+        # User specified limits
+        if xlim3d!=None:
+            ax.set_xlim3d(xlim3d)
+        if ylim3d!=None:
+            ax.set_ylim3d(ylim3d)
+        if zlim3d!=None:
+            ax.set_zlim3d(zlim3d)
+
+    # Draw point cloud data as 3D plot
+    f2 = plt.figure(figsize=(15, 8))
+    ax2 = f2.add_subplot(111, projection='3d')        
+    ax2 = Axes3D(f2)
+    # ax2.view_init(elev=20)
+    draw_point_cloud(ax2, 'Velodyne scan', xlim3d=(-10,30))
+    plt.savefig(dir+'/3d_point_cloud_'+filename)
+    
+    # Draw point cloud data as plane projections
+    f, ax3 = plt.subplots(3, 1, figsize=(15, 25))
+    draw_point_cloud(
+        ax3[0], 
+        'Velodyne scan, XZ projection (Y = 0), the car is moving in direction left to right', 
+        axes=[0, 2] # X and Z axes
+    )
+    draw_point_cloud(
+        ax3[1], 
+        'Velodyne scan, XY projection (Z = 0), the car is moving in direction left to right', 
+        axes=[0, 1] # X and Y axes
+    )
+    draw_point_cloud(
+        ax3[2], 
+        'Velodyne scan, YZ projection (X = 0), the car is moving towards the graph plane', 
+        axes=[1, 2] # Y and Z axes
+    )
+    plt.savefig(dir+'/2d_point_cloud_'+filename)
 
 
 
@@ -1534,8 +1535,11 @@ def dist_stat(recon, orig, meta, cell_max_points=200):
     return np.mean(all_dist), np.var(all_dist), np.mean(all_dist**2)
 
 def sweep_stat(recon, orig):
-    dist = scipy.spatial.distance.cdist(orig, recon) # order must be recon, orig
-    dist_vec = np.min(dist, 1)
+    # # has memory overflow issue
+    # dist = scipy.spatial.distance.cdist(orig, recon) # order must be recon, orig
+    # dist_vec = np.min(dist, 1)
+    nbrs = NearestNeighbors(n_neighbors=1, algorithm='ball_tree').fit(recon)
+    dist_vec, _ = nbrs.kneighbors(orig)
     return np.mean(dist_vec), np.var(dist_vec), np.mean(dist_vec**2)
 
 def dist_vis(recon, orig, meta, num_points_upper_threshold=200):
