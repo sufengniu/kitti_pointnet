@@ -613,16 +613,16 @@ class AutoEncoder():
         all displayed results are sweep-level on testing set.
         '''
         if self.level > 1:
-            points = self.group_multi(point_cell.test_cell)
-            num_points = len(points[0])
+            points = self.group_multi_down(point_cell.test_cell)
+            num_points = len(points[-1])
         else:
             points = point_cell.test_cell[0]
             num_points = len(points)
 
         if self.range_view == False:
-            sweep_size = self.L[0] * self.W[0]
+            sweep_size = self.L[-1] * self.W[-1]
         else:
-            sweep_size = point_cell.image_height[0] * point_cell.image_width[0]
+            sweep_size = point_cell.image_height[-1] * point_cell.image_width[-1]
         save_emd_all, save_chamfer_all = [], []
         save_mean_all, save_var_all, save_mse_all = [], [], []
         save_emd_part, save_chamfer_part = [], []
@@ -633,7 +633,7 @@ class AutoEncoder():
             s, e = i, i+sweep_size
             sweep_compress, compress_meta, compress_num, sweep_orig, orig_meta, orig_num = self.extract_sweep(points, s, e)
             if self.level > 1:
-                gt_points = point_cell.reconstruct_scene(sweep_compress[:,0,...], compress_meta)
+                gt_points = point_cell.reconstruct_scene(sweep_compress[:,-1,...], compress_meta) # debug here
             else:
                 gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
             orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
@@ -1133,14 +1133,17 @@ class AutoEncoder():
 
 class StackAutoEncoder(AutoEncoder):
     def __init__(self, FLAGS):
+        self.combination = FLAGS.combination
+        self.label_level = 0 if self.combination == 'down' else -1
         super(StackAutoEncoder, self).__init__(FLAGS)
-
+        
     def _ae(self, pc, mask, bn_decay):
 
         # ------- encoder -------
         stacked_code = []
-        for l in range(self.level):
+        for l in range(self.level): 
             net, rotation = self._encoder(pc[l], mask[l], bn_decay, name_scope='encoder_l%d'%l)
+
             # max pool
             if self.pooling == 'mean':
                 code = tf.reduce_mean(net, axis=-2, keepdims=False)
@@ -1148,14 +1151,14 @@ class StackAutoEncoder(AutoEncoder):
                 code = tf.reduce_max(net, axis=-2, keepdims=False)
             print (code)
             stacked_code.append(code)
-            if l == 0:
+            if l == self.label_level:
                 transform = rotation
 
         stacked_code = tf.concat(stacked_code, axis=-1)
         combined_code = self._fuse(stacked_code)
 
         # ------- decoder ------- 
-        x_reconstr = self._decoder(combined_code, mask[-1], bn_decay, name_scope='decoder')
+        x_reconstr = self._decoder(combined_code, mask[self.label_level], bn_decay, name_scope='decoder')
 
         if self.rotation == True:
             # rotate_matrix = tf.stop_gradient(tf.matrix_inverse(transform))
@@ -1168,7 +1171,7 @@ class StackAutoEncoder(AutoEncoder):
     def _fuse(self, code):
         code = tf.expand_dims(code, -2)
         code = tf_util.point_conv(code, 
-                         self.is_training, 
+                         self.is_training,
                          n_filters=[32, self.latent_dim],
                          activation_function=None,
                          name="fuse")
@@ -1216,13 +1219,14 @@ class StackAutoEncoder(AutoEncoder):
                         mask_batch = [tf.slice(layer_mask, [i*self.device_batch_size,0,0], [self.device_batch_size,-1,-1]) for layer_mask in self.mask]
 
                         x_reconstr, code = self._ae(pc_batch, mask_batch, bn_decay)
-
-                        match = approx_match(pc_batch[-1], x_reconstr)
-                        emd_loss = tf.reduce_mean(match_cost(pc_batch[-1], x_reconstr, match))
+                        
+                        label = pc_batch[self.label_level]
+                        match = approx_match(label, x_reconstr)
+                        emd_loss = tf.reduce_mean(match_cost(label, x_reconstr, match))
             
                         # self.chamfer_loss = calculate_chamfer(self.x_reconstr, self.pc)
                         chamfer_loss = tf.reduce_mean(tf.map_fn(lambda x: calculate_chamfer(x[0], x[1], x[2]), 
-                                                                     (x_reconstr, pc_batch[-1], meta_batch[-1]), dtype=tf.float32))
+                                                                     (x_reconstr, pc_batch[self.label_level], meta_batch[self.label_level]), dtype=tf.float32))
                         #  -------  loss + optimization  ------- 
                         if self.loss_type == "emd":
                             reconstruction_loss = emd_loss
@@ -1257,9 +1261,31 @@ class StackAutoEncoder(AutoEncoder):
             self.saver = tf.train.Saver()
 
 
+    def feed_data(self, X, meta, is_training):
+        if self.combination == 'up':
+            cell_num = [1]
+            for l in range(1, self.level):
+                if self.range_view == True:
+                    factor_W, factor_L = self.image_widht[0]//self.image_width[l], self.image_height[0]//self.image_height[l]
+                else:
+                    factor_W, factor_L = self.W[0]//self.W[l], self.L[0]//self.L[l]
+                cell_num.append(factor_W * factor_L)
+            cell_num = np.insert(np.cumsum(cell_num[::-1]), 0, values=0)
+
+        feed_dict={self.is_training: is_training}
+        for i in range(self.level):
+            if self.combination == 'down':
+                feed_dict[self.pc[i]] = X[:,i,...]
+                feed_dict[self.meta[i]] = meta[:,i]
+            else:
+                s, e = cell_num[i], cell_num[i+1]
+                feed_dict[self.pc[i]] = np.reshape(X[:,s:e,...], [-1, X.shape[-2], X.shape[-1]])
+                feed_dict[self.meta[i]] = np.reshape(meta[:,s:e], -1)
+        return feed_dict
+
     def train(self, point_cell):
 
-        level_idx = 0
+        level_idx = 0 if self.combination == 'down' else -1
         train_point, valid_point, test_point, \
         train_meta, valid_meta, test_meta = self.preprocess(point_cell)
 
@@ -1283,11 +1309,7 @@ class StackAutoEncoder(AutoEncoder):
                 X = current_point[start_idx:end_idx]
                 meta = current_meta[start_idx:end_idx]
 
-                feed_dict={self.is_training: True}
-                for i in range(self.level):
-                    feed_dict[self.pc[i]] = X[:,i,...]
-                    feed_dict[self.meta[i]] = meta[:,i]
-                
+                feed_dict = self.feed_data(X, meta, is_training=True)
                 op = [self.train_op, 
                       self.emd_loss,
                       self.chamfer_loss,
@@ -1297,18 +1319,18 @@ class StackAutoEncoder(AutoEncoder):
                     record_loss.append(emd_loss)
                 elif self.loss_type == 'chamfer':
                     record_loss.append(chamfer_loss)
-                mean, var, mse = util.dist_stat(recon, X[:,-1,:,:], meta[:,-1], self.origin_num_points[-1])
+                mean, var, mse = util.dist_stat(recon, X[:,level_idx,:,:], meta[:,level_idx], self.origin_num_points[level_idx])
                 record_mean.append(mean)
                 record_var.append(var)
                 record_mse.append(mse)
 
-                compression_ratio = (self.batch_size*self.latent_dim) / (np.sum(meta)*3.0)
+                compression_ratio = (self.batch_size*self.latent_dim) / (np.sum(meta[:,level_idx])*3.0)
                 if batch_idx % 100 == 0:
                     print ("iteration/epoch: {}/{}, optimizing {} loss, emd loss: {}, chamfer loss: {}".format(
                         batch_idx, epoch, self.loss_type, emd_loss, chamfer_loss))
                     print ("mean: %.6f, var: %.6f, mse: %.6f, compression ratio: %.6f\n" % 
-                                                                      (np.array(record_mean).mean(), 
-                                                                       np.array(record_var).mean(), 
+                                                                      (np.array(record_mean).mean(),
+                                                                       np.array(record_var).mean(),
                                                                        np.array(record_mse).mean(),
                                                                        compression_ratio))
 
@@ -1330,8 +1352,7 @@ class StackAutoEncoder(AutoEncoder):
 
                 def visualize_sample(sample_points, sample_meta, sample_num, orig_points, orig_meta, filename=None):
                     
-                    meta_nums = sample_meta['stacked_num'].str[1].values.astype(int)
-                    parent_nums = sample_num
+                    meta_nums = sample_meta['stacked_num'].str[level_idx].values.astype(int)
                     if (meta_nums >= self.cell_min_points[0]).all():
 
                         sample_generated, sample_emd, sample_chamfer = [], [], []
@@ -1339,19 +1360,15 @@ class StackAutoEncoder(AutoEncoder):
                             start_idx, end_idx = idx, min(idx+self.batch_size, sample_points.shape[0])
                             if end_idx-start_idx == self.batch_size:
                                 fetched_pc = sample_points[start_idx:end_idx]
-                                fetched_meta = meta_nums[start_idx:end_idx]
-                                fetched_pmeta = parent_nums[start_idx:end_idx]
+                                fetched_pmeta = sample_num[start_idx:end_idx]
                             else:
                                 pad_size = self.batch_size - (end_idx - start_idx)
                                 pad_shape = [pad_size] + list(sample_points[start_idx:end_idx].shape[1:])
                                 fetched_pc = np.concatenate([sample_points[start_idx:end_idx], np.zeros(pad_shape)], axis=0)
-                                fetched_meta = np.concatenate([meta_nums[start_idx:end_idx], np.zeros(pad_size)], axis=0)
-                                fetched_pmeta = np.concatenate([parent_nums[start_idx:end_idx], np.zeros([pad_size, self.level])], axis=0)
+                                pmeta_shape = [pad_size] + ([self.level] if self.combination == 'down' else list(sample_num.shape[1:]))
+                                fetched_pmeta = np.concatenate([sample_num[start_idx:end_idx], np.zeros(pmeta_shape)], axis=0)
 
-                            feed_dict={self.is_training: False}
-                            for i in range(self.level):
-                                feed_dict[self.pc[i]] = fetched_pc[:,i,...]
-                                feed_dict[self.meta[i]] = fetched_pmeta[:,i]
+                            feed_dict = self.feed_data(fetched_pc, fetched_pmeta, is_training=False)
 
                             sg, se, sc = self.sess.run([self.x_reconstr, 
                                                         self.emd_loss, 
@@ -1367,7 +1384,7 @@ class StackAutoEncoder(AutoEncoder):
                         raise
 
                     reconstruction_sample = point_cell.reconstruct_scene(sample_generated, sample_meta)
-                    reconstruction_orig = point_cell.reconstruct_scene(orig_points[:,-1,...], orig_meta)
+                    reconstruction_orig = point_cell.reconstruct_scene(orig_points[:,level_idx,...], orig_meta)
                     reconstruction = np.concatenate([reconstruction_sample, reconstruction_orig], 0)
 
                     if filename == None:
@@ -1411,21 +1428,19 @@ class StackAutoEncoder(AutoEncoder):
         self.evaluate(test_point, test_meta, test=True)
         
     def evaluate(self, valid_point, valid_meta, test=True):
-
+        
+        level_idx = 0 if self.combination == 'down' else -1
         valid_emd_loss, valid_chamfer_loss = [], []
         i = 0
         mean_arr, var_arr, mse_arr = [], [], []
         for i in range(len(valid_point)//self.batch_size):
             valid_s, valid_e = i*self.batch_size, (i+1)*self.batch_size
-            feed_dict={self.is_training: False}
-            for i in range(self.level):
-                feed_dict[self.pc[i]] = valid_point[valid_s:valid_e,i,...]
-                feed_dict[self.meta[i]] = valid_meta[valid_s:valid_e,i]
+            feed_dict = self.feed_data(valid_point[valid_s:valid_e], valid_meta[valid_s:valid_e], is_training=False)
 
             vel, vcl, recon = self.sess.run([self.emd_loss, self.chamfer_loss, self.x_reconstr], feed_dict)
             mean, var, mse = util.dist_stat(recon, 
-                                            valid_point[valid_s:valid_e,-1,...], 
-                                            valid_meta[valid_s:valid_e,-1], self.origin_num_points[-1])
+                                            valid_point[valid_s:valid_e,level_idx,...], 
+                                            valid_meta[valid_s:valid_e,level_idx], self.origin_num_points[level_idx])
             mean_arr.append(mean)
             var_arr.append(var)
             mse_arr.append(mse)
@@ -1453,9 +1468,9 @@ class StackAutoEncoder(AutoEncoder):
 
         return train_point, valid_point, test_point, train_num, valid_num, test_num
 
-    def group_multi(self, points):
+    def group_multi_down(self, points):
         print ("grouping multi scale cells...")
-        level_idx = -1
+        level_idx = 0
         if self.range_view == True:
             total_sweep_size = self.image_height[level_idx]*self.image_width[level_idx]
         else:
@@ -1492,43 +1507,153 @@ class StackAutoEncoder(AutoEncoder):
         stacked_points = np.stack(stacked_points)
         stacked_num = np.stack(stacked_num)
 
-        for i in range(points[0].shape[0]): # change -1 to 0
-            points[0].iloc[i]['stacked'] = stacked_points[:,i,...] # change -1 to 0
-            points[0].iloc[i]['stacked_num'] = stacked_num[:,i] # change -1 to 0
+        p = points[level_idx].copy()
+        for i in range(p.shape[0]): # change -1 to 0
+            p.iloc[i]['stacked'] = stacked_points[:,i,...] # change -1 to 0
+            p.iloc[i]['stacked_num'] = stacked_num[:,i] # change -1 to 0
 
-        return points
+        return p
 
-    def extract_point(self, points, level_idx=0):
-        # level_idx = -1 # change -1 to 0
-        points = self.group_multi(points)
-        low_points = points[level_idx]
-        sample_points_df = low_points[low_points['stacked_num'].str[1] >= self.cell_min_points[level_idx]]
-        parent_points = sample_points_df.as_matrix(columns=['stacked'])
-        parent_points = np.array(list(parent_points.squeeze()))
+    def group_multi_up(self, points):
+        print ("grouping multi scale cells...")
+        level_idx = -1
+        if self.range_view == True:
+            total_sweep_size = self.image_height[level_idx]*self.image_width[level_idx]
+        else:
+            total_sweep_size = self.L[level_idx]*self.W[level_idx]
+        num_sweeps = int(points[level_idx].shape[0] / total_sweep_size)
+        stacked_points, stacked_num = [], []
+        for l_idx in range(self.level-1):
+            if self.range_view == False:
+                factor_L = (self.L[0]//self.L[l_idx+1])
+                factor_W = (self.W[0]//self.W[l_idx+1])
+                sweep_size = self.L[l_idx]*self.W[l_idx]
+                level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
+                level_shape = [num_sweeps, self.L[l_idx], self.W[l_idx], level_points.shape[-2], 3]
+            else:
+                factor_L = (self.image_height[0]//self.image_height[l_idx])
+                factor_W = (self.image_width[0]//self.image_width[l_idx])
+                sweep_size = self.image_height[l_idx]*self.image_width[l_idx]
+                level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
+                level_shape = [num_sweeps, self.image_height[l_idx], self.image_width[l_idx], level_points.shape[-2], 3]
+            level_points = np.reshape(level_points, level_shape)
+            level_num = np.array(list(points[l_idx].as_matrix(columns=['num_points']).squeeze()))
+            if self.range_view == False:
+                level_num = np.reshape(level_num, [num_sweeps, self.L[l_idx], self.W[l_idx]])
+            else:
+                level_num = np.reshape(level_num, [num_sweeps, self.image_height[l_idx], self.image_width[l_idx]])
+
+            buf_points, buf_num = [], []
+            for i in range(factor_L):
+                for j in range(factor_W):
+                    buf_points.append(level_points[:,i::factor_L,j::factor_W,...])
+                    buf_num.append(level_num[:,i::factor_L,j::factor_W])
+            packed_points = np.reshape(np.transpose(np.stack(buf_points), [1,2,3,0,4,5]), [-1, factor_L*factor_W, level_shape[-2], 3])
+            stacked_points.append(packed_points)
+            packed_num = np.reshape(np.transpose(np.stack(buf_num), [1,2,3,0]), [-1, factor_L*factor_W])
+            stacked_num.append(packed_num)
+        
+        stacked_points.append(np.expand_dims(np.array(list(points[-1].as_matrix(columns=['stacked']).squeeze())), axis=1))
+        stacked_num.append(np.expand_dims(np.array(list(points[-1].as_matrix(columns=['num_points']).squeeze())), axis=1))
+        stacked_points = np.concatenate(stacked_points, axis=1)
+        stacked_num = np.concatenate(stacked_num, axis=1)
+
+        p = points[level_idx].copy()
+        for i in range(p.shape[0]): # change -1 to 0
+            p.iloc[i]['stacked'] = stacked_points[i,...] # change -1 to 0
+            p.iloc[i]['stacked_num'] = stacked_num[i,...] # change -1 to 0
+
+        return p
+
+    def extract_point(self, points):
+        if self.combination == 'down':
+            level_idx=0
+            point_group = self.group_multi_down(points)
+        else:
+            level_idx=-1
+            point_group = self.group_multi_up(points)
+        low_points = point_group
+        sample_points_df = low_points[low_points['stacked_num'].str[level_idx] >= self.cell_min_points[level_idx]]
+        stacked_points = sample_points_df.as_matrix(columns=['stacked'])
+        stacked_points = np.array(list(stacked_points.squeeze()))
         sample_num = np.array(list(sample_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         sample_meta = sample_points_df
 
-        orig_points_df = low_points[(low_points['stacked_num'].str[1] < self.cell_min_points[level_idx]) & (low_points['stacked_num'].str[1] > 0)]
+        orig_points_df = low_points[(low_points['stacked_num'].str[level_idx] < self.cell_min_points[level_idx]) & (low_points['stacked_num'].str[level_idx] > 0)]
         orig_points = orig_points_df.as_matrix(columns=['stacked'])
         orig_points = np.array(list(orig_points.squeeze()))
         orig_num = np.array(list(orig_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         orig_meta = orig_points_df
 
-        return parent_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
+        return stacked_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
-    def extract_sweep(self, points, start_idx, end_idx, level_idx = 0):
+    def extract_sweep(self, points, start_idx, end_idx, level_idx=0):
         low_points = points[level_idx]
         level_points = low_points.iloc[start_idx:end_idx]
-        sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
+        sample_points_df = level_points[level_points['stacked_num'].str[1] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['stacked'])
         sample_points = np.array(list(sample_points.squeeze()))
         sample_num = np.array(list(sample_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         sample_meta = sample_points_df
 
-        orig_points_df = level_points[(level_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
-        orig_points = orig_points_df.as_matrix(columns=['points'])
+        orig_points_df = level_points[(level_points['stacked_num'].str[1] < self.cell_min_points[level_idx]) & (level_points['stacked_num'].str[1] > 0)]
+        orig_points = orig_points_df.as_matrix(columns=['stacked'])
         orig_points = np.array(list(orig_points.squeeze()))
         orig_num = orig_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         orig_meta = orig_points_df
 
         return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
+
+
+
+
+
+def group_multi_up(points):
+    print ("grouping multi scale cells...")
+    level_idx = -1
+    if model.range_view == True:
+        total_sweep_size = model.image_height[level_idx]*model.image_width[level_idx]
+    else:
+        total_sweep_size = model.L[level_idx]*model.W[level_idx]
+    num_sweeps = int(points[level_idx].shape[0] / total_sweep_size)
+    stacked_points, stacked_num = [], []
+    for l_idx in range(model.level-1):
+        if model.range_view == False:
+            factor_L = (model.L[0]//model.L[l_idx+1])
+            factor_W = (model.W[0]//model.W[l_idx+1])
+            sweep_size = model.L[l_idx]*model.W[l_idx]
+            level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
+            level_shape = [num_sweeps, model.L[l_idx], model.W[l_idx], level_points.shape[-2], 3]
+        else:
+            factor_L = (model.image_height[0]//model.image_height[l_idx])
+            factor_W = (self.image_width[0]//self.image_width[l_idx])
+            sweep_size = self.image_height[l_idx]*self.image_width[l_idx]
+            level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
+            level_shape = [num_sweeps, self.image_height[l_idx], self.image_width[l_idx], level_points.shape[-2], 3]
+        level_points = np.reshape(level_points, level_shape)
+        level_num = np.array(list(points[l_idx].as_matrix(columns=['num_points']).squeeze()))
+        if model.range_view == False:
+            level_num = np.reshape(level_num, [num_sweeps, model.L[l_idx], model.W[l_idx]])
+        else:
+            level_num = np.reshape(level_num, [num_sweeps, self.image_height[l_idx], self.image_width[l_idx]])
+
+        buf_points, buf_num = [], []
+        for i in range(factor_L):
+            for j in range(factor_W):
+                buf_points.append(level_points[:,i::factor_L,j::factor_W,...])
+                buf_num.append(level_num[:,i::factor_L,j::factor_W])
+        packed_points = np.reshape(np.transpose(np.stack(buf_points), [1,2,3,0,4,5]), [-1, factor_L*factor_W, level_shape[-2], 3])
+        stacked_points.append(packed_points)
+        packed_num = np.reshape(np.transpose(np.stack(buf_num), [1,2,3,0]), [-1, factor_L*factor_W])
+        stacked_num.append(packed_num)
+    
+    stacked_points.append(np.expand_dims(np.array(list(points[-1].as_matrix(columns=['stacked']).squeeze())), axis=1))
+    stacked_num.append(np.expand_dims(np.array(list(points[-1].as_matrix(columns=['num_points']).squeeze())), axis=1))
+    stacked_points = np.concatenate(stacked_points, axis=1)
+    stacked_num = np.concatenate(stacked_num, axis=1)
+
+    for i in range(points[level_idx].shape[0]): # change -1 to 0
+        points[level_idx].iloc[i]['stacked'] = stacked_points[i,...] # change -1 to 0
+        points[level_idx].iloc[i]['stacked_num'] = stacked_num[i,...] # change -1 to 0
+
+    return points

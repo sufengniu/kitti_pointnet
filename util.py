@@ -779,7 +779,7 @@ class LoadData():
 
         return data_cell_f, data_cell_b
 
-    def partition_batch(self, cleaned_velo, permutation=True):
+    def partition_batch(self, cleaned_velo, permutation=False):
         cell_points = [[] for _ in range(self.level)]
         if self.range_view == True:
             for idx, points in enumerate(tqdm(cleaned_velo)):

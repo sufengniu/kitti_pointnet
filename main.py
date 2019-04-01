@@ -9,8 +9,8 @@ import tensorflow as tf
 import os
 import os.path as osp
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 from model import AutoEncoder, StackAutoEncoder
@@ -69,6 +69,8 @@ tf.flags.DEFINE_string("encoder", "pointnet",
                        "encoder configuration [pointnet|magic|dgcnn|inception]")
 tf.flags.DEFINE_string("decoder", "pointnet",
                        "decoder configuration [pointnet|pointgrid]")
+tf.flags.DEFINE_string("combination", "up",
+                       "this is temporary setting: up example 64,32 -> 32, down example: 32,16 -> 32 [up|down]")
 tf.flags.DEFINE_string("pooling", "max",
                        "use mean pooling")
 tf.flags.DEFINE_integer("batch_size", 512,
@@ -97,7 +99,7 @@ tf.flags.DEFINE_integer("decay_step", 200000,
                        "Decay step for lr decay [default: 200000]")
 tf.flags.DEFINE_integer("save_freq", 20,
                       "learning rate")
-tf.flags.DEFINE_float("learning_rate", 0.001,
+tf.flags.DEFINE_float("learning_rate", 0.005,
                       "learning rate")
 
 
