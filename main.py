@@ -9,8 +9,8 @@ import tensorflow as tf
 import os
 import os.path as osp
 
-# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# BASE_DIR = '/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet'
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 from model import AutoEncoder, StackAutoEncoder
