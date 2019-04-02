@@ -613,16 +613,21 @@ class AutoEncoder():
         all displayed results are sweep-level on testing set.
         '''
         if self.level > 1:
-            points = self.group_multi_down(point_cell.test_cell)
-            num_points = len(points[-1])
+            level_idx = 0 if self.combination == 'down' else -1
+            if self.combination == 'down':
+                points = self.group_multi_down(point_cell.test_cell)
+            elif self.combination == 'up':
+                points = self.group_multi_up(point_cell.test_cell)
+            num_points = len(points[level_idx])
         else:
             points = point_cell.test_cell[0]
             num_points = len(points)
+            level_idx = 0
 
         if self.range_view == False:
-            sweep_size = self.L[-1] * self.W[-1]
+            sweep_size = self.L[level_idx] * self.W[level_idx]
         else:
-            sweep_size = point_cell.image_height[-1] * point_cell.image_width[-1]
+            sweep_size = point_cell.image_height[level_idx] * point_cell.image_width[level_idx]
         save_emd_all, save_chamfer_all = [], []
         save_mean_all, save_var_all, save_mse_all = [], [], []
         save_emd_part, save_chamfer_part = [], []
@@ -631,9 +636,9 @@ class AutoEncoder():
 
         for i in tqdm(range(0, num_points, sweep_size)):
             s, e = i, i+sweep_size
-            sweep_compress, compress_meta, compress_num, sweep_orig, orig_meta, orig_num = self.extract_sweep(points, s, e)
+            sweep_compress, compress_meta, compress_num, sweep_orig, orig_meta, orig_num = self.extract_sweep(points, s, e, level_idx)
             if self.level > 1:
-                gt_points = point_cell.reconstruct_scene(sweep_compress[:,-1,...], compress_meta) # debug here
+                gt_points = point_cell.reconstruct_scene(sweep_compress[:,level_idx,...], compress_meta) # debug here
             else:
                 gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
             orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
@@ -1590,13 +1595,13 @@ class StackAutoEncoder(AutoEncoder):
     def extract_sweep(self, points, start_idx, end_idx, level_idx=0):
         low_points = points[level_idx]
         level_points = low_points.iloc[start_idx:end_idx]
-        sample_points_df = level_points[level_points['stacked_num'].str[1] >= self.cell_min_points[level_idx]]
+        sample_points_df = level_points[level_points['stacked_num'].str[level_idx] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['stacked'])
         sample_points = np.array(list(sample_points.squeeze()))
         sample_num = np.array(list(sample_points_df.as_matrix(columns=['stacked_num']).squeeze())).astype(int)
         sample_meta = sample_points_df
 
-        orig_points_df = level_points[(level_points['stacked_num'].str[1] < self.cell_min_points[level_idx]) & (level_points['stacked_num'].str[1] > 0)]
+        orig_points_df = level_points[(level_points['stacked_num'].str[level_idx] < self.cell_min_points[level_idx]) & (level_points['stacked_num'].str[level_idx] > 0)]
         orig_points = orig_points_df.as_matrix(columns=['stacked'])
         orig_points = np.array(list(orig_points.squeeze()))
         orig_num = orig_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
@@ -1604,56 +1609,3 @@ class StackAutoEncoder(AutoEncoder):
 
         return sample_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
-
-
-
-
-def group_multi_up(points):
-    print ("grouping multi scale cells...")
-    level_idx = -1
-    if model.range_view == True:
-        total_sweep_size = model.image_height[level_idx]*model.image_width[level_idx]
-    else:
-        total_sweep_size = model.L[level_idx]*model.W[level_idx]
-    num_sweeps = int(points[level_idx].shape[0] / total_sweep_size)
-    stacked_points, stacked_num = [], []
-    for l_idx in range(model.level-1):
-        if model.range_view == False:
-            factor_L = (model.L[0]//model.L[l_idx+1])
-            factor_W = (model.W[0]//model.W[l_idx+1])
-            sweep_size = model.L[l_idx]*model.W[l_idx]
-            level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
-            level_shape = [num_sweeps, model.L[l_idx], model.W[l_idx], level_points.shape[-2], 3]
-        else:
-            factor_L = (model.image_height[0]//model.image_height[l_idx])
-            factor_W = (self.image_width[0]//self.image_width[l_idx])
-            sweep_size = self.image_height[l_idx]*self.image_width[l_idx]
-            level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
-            level_shape = [num_sweeps, self.image_height[l_idx], self.image_width[l_idx], level_points.shape[-2], 3]
-        level_points = np.reshape(level_points, level_shape)
-        level_num = np.array(list(points[l_idx].as_matrix(columns=['num_points']).squeeze()))
-        if model.range_view == False:
-            level_num = np.reshape(level_num, [num_sweeps, model.L[l_idx], model.W[l_idx]])
-        else:
-            level_num = np.reshape(level_num, [num_sweeps, self.image_height[l_idx], self.image_width[l_idx]])
-
-        buf_points, buf_num = [], []
-        for i in range(factor_L):
-            for j in range(factor_W):
-                buf_points.append(level_points[:,i::factor_L,j::factor_W,...])
-                buf_num.append(level_num[:,i::factor_L,j::factor_W])
-        packed_points = np.reshape(np.transpose(np.stack(buf_points), [1,2,3,0,4,5]), [-1, factor_L*factor_W, level_shape[-2], 3])
-        stacked_points.append(packed_points)
-        packed_num = np.reshape(np.transpose(np.stack(buf_num), [1,2,3,0]), [-1, factor_L*factor_W])
-        stacked_num.append(packed_num)
-    
-    stacked_points.append(np.expand_dims(np.array(list(points[-1].as_matrix(columns=['stacked']).squeeze())), axis=1))
-    stacked_num.append(np.expand_dims(np.array(list(points[-1].as_matrix(columns=['num_points']).squeeze())), axis=1))
-    stacked_points = np.concatenate(stacked_points, axis=1)
-    stacked_num = np.concatenate(stacked_num, axis=1)
-
-    for i in range(points[level_idx].shape[0]): # change -1 to 0
-        points[level_idx].iloc[i]['stacked'] = stacked_points[i,...] # change -1 to 0
-        points[level_idx].iloc[i]['stacked_num'] = stacked_num[i,...] # change -1 to 0
-
-    return points
