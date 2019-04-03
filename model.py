@@ -618,10 +618,10 @@ class AutoEncoder():
                 points = self.group_multi_down(point_cell.test_cell)
             elif self.combination == 'up':
                 points = self.group_multi_up(point_cell.test_cell)
-            num_points = len(points[level_idx])
+            num_cell = len(points)
         else:
             points = point_cell.test_cell[0]
-            num_points = len(points)
+            num_cell = len(points)
             level_idx = 0
 
         if self.range_view == False:
@@ -634,14 +634,15 @@ class AutoEncoder():
         save_mean_part, save_var_part, save_mse_part = [], [], []
         test_batch_size = self.batch_size
 
-        for i in tqdm(range(0, num_points, sweep_size)):
+        for i in tqdm(range(0, num_cell, sweep_size)):
             s, e = i, i+sweep_size
             sweep_compress, compress_meta, compress_num, sweep_orig, orig_meta, orig_num = self.extract_sweep(points, s, e, level_idx)
             if self.level > 1:
                 gt_points = point_cell.reconstruct_scene(sweep_compress[:,level_idx,...], compress_meta) # debug here
+                orig_points = point_cell.reconstruct_scene(sweep_orig[:,level_idx,...], orig_meta)
             else:
                 gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
-            orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
+                orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
             import numpy as np
             orig_all = np.concatenate([gt_points, orig_points], axis=0)
 
@@ -687,19 +688,16 @@ class AutoEncoder():
                         recon = np.array(recon)
                     elif compress == 'autoencoder':
                         if self.level > 1:
-                            if valid_e - valid_s == test_batch_size:
+                            if valid_e-valid_s == test_batch_size:
                                 fetched_pc = sweep_compress[valid_s:valid_e]
                                 fetched_pmeta = compress_num[valid_s:valid_e]
                             else:
                                 pad_size = test_batch_size - (valid_e - valid_s)
                                 pad_shape = [pad_size] + list(sweep_compress[valid_s:valid_e].shape[1:])
                                 fetched_pc = np.concatenate([sweep_compress[valid_s:valid_e], np.zeros(pad_shape)], axis=0)
-                                fetched_pmeta = np.concatenate([compress_num[valid_s:valid_e], np.zeros([pad_size, self.level])], axis=0)
-
-                            feed_dict={self.is_training: False}
-                            for i in range(self.level):
-                                feed_dict[self.pc[i]] = fetched_pc[:,i,...]
-                                feed_dict[self.meta[i]] = fetched_pmeta[:,i]
+                                pmeta_shape = [pad_size] + ([self.level] if self.combination == 'down' else list(compress_num.shape[1:]))
+                                fetched_pmeta = np.concatenate([compress_num[valid_s:valid_e], np.zeros(pmeta_shape)], axis=0)
+                            feed_dict = self.feed_data(fetched_pc, fetched_pmeta, is_training=False)
                         else:
                             if valid_e - valid_s == test_batch_size:
                                 fetched_pc = sweep_compress[valid_s:valid_e]
@@ -746,18 +744,18 @@ class AutoEncoder():
             save_var_all.append(var_all)
             save_mse_all.append(mse_all)
 
-        print ("all points evaluation statistics:\n")
+        print ("all points evaluation statistics:")
         print ('testing sweep mean emd loss: {}, mean chamfer loss: {}'.format(np.array(save_emd_all).mean(),
                                                                                np.array(save_chamfer_all).mean()))
-        print ('mean: %.6f, var: %.6f, mse: %.6f' % (np.array(save_mean_all).mean(), 
+        print ('mean: %.6f, var: %.6f, mse: %.6f\n' % (np.array(save_mean_all).mean(), 
                                                      np.array(save_var_all).mean(), 
                                                      np.array(save_mse_all).mean()))
 
         if compress != 'random' and compress != 'octree':
-            print ("compressed points evaluation statistics:\n")
+            print ("compressed points evaluation statistics:")
             print ('testing sweep mean emd loss: {}, mean chamfer loss: {}'.format(np.array(save_emd_part).mean(),
                                                                                    np.array(save_chamfer_part).mean()))
-            print ('mean: %.6f, var: %.6f, mse: %.6f' % (np.array(save_mean_part).mean(), 
+            print ('mean: %.6f, var: %.6f, mse: %.6f\n' % (np.array(save_mean_part).mean(), 
                                                          np.array(save_var_part).mean(), 
                                                          np.array(save_mse_part).mean()))
 
@@ -1593,7 +1591,7 @@ class StackAutoEncoder(AutoEncoder):
         return stacked_points, sample_meta, sample_num, orig_points, orig_meta, orig_num
 
     def extract_sweep(self, points, start_idx, end_idx, level_idx=0):
-        low_points = points[level_idx]
+        low_points = points
         level_points = low_points.iloc[start_idx:end_idx]
         sample_points_df = level_points[level_points['stacked_num'].str[level_idx] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['stacked'])
