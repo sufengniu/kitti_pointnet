@@ -1269,7 +1269,7 @@ class StackAutoEncoder(AutoEncoder):
             cell_num = [1]
             for l in range(1, self.level):
                 if self.range_view == True:
-                    factor_W, factor_L = self.image_widht[0]//self.image_width[l], self.image_height[0]//self.image_height[l]
+                    factor_W, factor_L = self.image_width[0]//self.image_width[l], self.image_height[0]//self.image_height[l]
                 else:
                     factor_W, factor_L = self.W[0]//self.W[l], self.L[0]//self.L[l]
                 cell_num.append(factor_W * factor_L)
@@ -1534,8 +1534,8 @@ class StackAutoEncoder(AutoEncoder):
                 level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
                 level_shape = [num_sweeps, self.L[l_idx], self.W[l_idx], level_points.shape[-2], 3]
             else:
-                factor_L = (self.image_height[0]//self.image_height[l_idx])
-                factor_W = (self.image_width[0]//self.image_width[l_idx])
+                factor_L = (self.image_height[0]//self.image_height[l_idx+1])
+                factor_W = (self.image_width[0]//self.image_width[l_idx+1])
                 sweep_size = self.image_height[l_idx]*self.image_width[l_idx]
                 level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
                 level_shape = [num_sweeps, self.image_height[l_idx], self.image_width[l_idx], level_points.shape[-2], 3]
