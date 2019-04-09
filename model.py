@@ -1142,6 +1142,8 @@ class StackAutoEncoder(AutoEncoder):
         
     def _ae(self, pc, mask, bn_decay):
 
+        label_level = 0 if self.combination == 'down' else self.level-1
+        
         # ------- encoder -------
         stacked_code = []
         for l in range(self.level): 
@@ -1154,7 +1156,7 @@ class StackAutoEncoder(AutoEncoder):
                 code = tf.reduce_max(net, axis=-2, keepdims=False)
             print (code)
             stacked_code.append(code)
-            if l == self.label_level:
+            if l == label_level:
                 transform = rotation
 
         stacked_code = tf.concat(stacked_code, axis=-1)
