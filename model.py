@@ -759,7 +759,7 @@ class AutoEncoder():
                                                          np.array(save_var_part).mean(), 
                                                          np.array(save_mse_part).mean()))
 
-        cell_rate, sweep_rate = point_cell.test_compression_rate()
+        cell_rate, sweep_rate = point_cell.test_compression_rate(level_idx=level_idx)
 
         emd_all = ['emd_all', np.array(save_emd_all).mean()]
         chamfer_all = ['chamfer_all', np.array(save_chamfer_all).mean()]

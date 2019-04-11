@@ -956,7 +956,7 @@ class LoadData():
             multi_cell[k] = multi_cell[k].dropna(thresh=5)
         return multi_cell
 
-    def test_compression_rate(self):
+    def test_compression_rate(self, level_idx=0):
 
         print ('calculating average testing compression rate ...')
         cell_rate_record, sweep_rate_record = [], []
@@ -965,7 +965,7 @@ class LoadData():
                 sweep_cell = self.partition_single_range(sweep, i)
             else:
                 sweep_cell = self.partition_single(sweep, i)
-            cell_rate, sweep_rate = self.calculate_compression_rate(sweep_cell[0]) # only calculate compression on the finest scale
+            cell_rate, sweep_rate = self.calculate_compression_rate(sweep_cell[level_idx]) # only calculate compression on the finest scale
             cell_rate_record.append(cell_rate)
             sweep_rate_record.append(sweep_rate)
         print ('average cell compression rate: %.6f' % (np.mean(cell_rate_record)))
