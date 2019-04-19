@@ -1285,7 +1285,7 @@ class StackAutoEncoder(AutoEncoder):
                 factor_W, factor_L = self.image_width[0]//self.image_width[1], self.image_height[0]//self.image_height[1]
             else:
                 factor_W, factor_L = self.W[0]//self.W[1], self.L[0]//self.L[1]
-            cell_num = [0,factor_W*factor_L,factor_W*factor_L+1]
+            cell_num = [0,factor_W*factor_L,factor_W*factor_L+1,factor_W*factor_L+2]
 
         feed_dict={self.is_training: is_training}
         for i in range(self.level):
@@ -1542,17 +1542,17 @@ class StackAutoEncoder(AutoEncoder):
                 level_points = np.array(list(points[l_idx-1].as_matrix(columns=['points']).squeeze()))
                 level_shape = [num_sweeps, self.L[l_idx-1], self.W[l_idx-1], level_points.shape[-2], 3]
             else:
-                factor_L = (self.image_height[0]//self.image_height[l_idx+1])
-                factor_W = (self.image_width[0]//self.image_width[l_idx+1])
-                sweep_size = self.image_height[l_idx]*self.image_width[l_idx]
+                factor_L = (self.image_height[l_idx-1]//self.image_height[level_idx])
+                factor_W = (self.image_width[l_idx-1]//self.image_width[level_idx])
+                sweep_size = self.image_height[l_idx-1]*self.image_width[l_idx-1]
                 level_points = np.array(list(points[l_idx].as_matrix(columns=['points']).squeeze()))
-                level_shape = [num_sweeps, self.image_height[l_idx], self.image_width[l_idx], level_points.shape[-2], 3]
+                level_shape = [num_sweeps, self.image_height[l_idx-1], self.image_width[l_idx-1], level_points.shape[-2], 3]
             level_points = np.reshape(level_points, level_shape)
             level_num = np.array(list(points[l_idx-1].as_matrix(columns=['num_points']).squeeze()))
             if self.range_view == False:
                 level_num = np.reshape(level_num, [num_sweeps, self.L[l_idx-1], self.W[l_idx-1]])
             else:
-                level_num = np.reshape(level_num, [num_sweeps, self.image_height[l_idx], self.image_width[l_idx]])
+                level_num = np.reshape(level_num, [num_sweeps, self.image_height[l_idx-1], self.image_width[l_idx-1]])
 
             buf_points, buf_num = [], []
             for i in range(factor_L):
