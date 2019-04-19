@@ -1478,9 +1478,7 @@ class StackAutoEncoder(AutoEncoder):
             total_sweep_size = self.L[level_idx]*self.W[level_idx]
         num_sweeps = int(points[level_idx].shape[0] / total_sweep_size)
         stacked_points = [np.array(list(points[level_idx].as_matrix(columns=['stacked']).squeeze()))]
-        stacked_num = [np.array(list(points[level_idx].as_matrix(columns=['num_points']).squeeze()))]
-        if stacked_points[0].shape != np.array(list(points[0].as_matrix(columns=['points']).squeeze())).shape:
-            return points
+        stacked_num = [np.array(list(points[level_idx].as_matrix(columns=['num_points']).squeeze()))] 
         for l_idx in range(1+level_idx, self.level):
             if self.range_view == False:
                 factor_L = (self.L[level_idx]//self.L[l_idx])
@@ -1516,8 +1514,8 @@ class StackAutoEncoder(AutoEncoder):
         return p
 
     def group_multi_middle(self, points):
-        p_up = self.group_multi_up(points[:2], level_idx=1)
-        p_down = self.group_multi_down(points[1:], level_idx=1)
+        p_up = self.group_multi_up(points, level_idx=1)
+        p_down = self.group_multi_down(points, level_idx=1)
 
         for i in range(p_up.shape[0]): # change -1 to 0
             stacked_p = np.concatenate([p_up.iloc[i]['stacked'], np.expand_dims(p_down.iloc[i]['stacked'][1,...], 0)], axis=0)
@@ -1583,7 +1581,7 @@ class StackAutoEncoder(AutoEncoder):
             level_idx=0
             point_group = self.group_multi_down(points, level_idx)
         elif self.combination == 'sandwich':
-            point_group = self.group_multi_middle(points, level_idx=1)
+            point_group = self.group_multi_middle(points)
             level_idx=-2
         else:
             level_idx=-1
