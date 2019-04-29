@@ -29,7 +29,7 @@ tf.flags.DEFINE_string("result_output_path", None,
                        "Checkpointing directory.")
 tf.flags.DEFINE_string("data_in_dir", "/scratch2/sniu/kitti/",
                        "data input dir")
-tf.flags.DEFINE_string("hdmap_dir", "/scratch2/sniu/hdmap/",
+tf.flags.DEFINE_string("hdmap_dir", "/scratch3/sniu/hdmap/",
                        "data input dir")
 tf.flags.DEFINE_string("date", "2011_09_26",
                        "which date to use")
@@ -45,17 +45,17 @@ tf.flags.DEFINE_string("checkpoint_number", None,
                        "number of epoch")
 
 # partition
-tf.flags.DEFINE_string("partition_mode", 'grid', 
+tf.flags.DEFINE_string("partition_mode", 'range', 
                        "how to partition the sweep, grid partition, or range view partition [grid|range]")
 tf.flags.DEFINE_boolean("fb_split", False, 
                        "if split data as foreground and background")
-tf.flags.DEFINE_string("PW", '32,16', # x: width, y: length, 'fine grain ,...., coarse grain'
+tf.flags.DEFINE_string("PW", '64', # x: width, y: length, 'fine grain ,...., coarse grain'
                        "number of partitions for wideth, if it is list, it becomes the multi-scale") 
-tf.flags.DEFINE_string("PL", '32,16', 
+tf.flags.DEFINE_string("PL", '8', 
                        "number of partition for length, same as PW")
-tf.flags.DEFINE_string("cell_max_points", '512,512', 
+tf.flags.DEFINE_string("cell_max_points", '512', 
                        "maximum number of points in the cell")
-tf.flags.DEFINE_string("cell_min_points", '50,50', 
+tf.flags.DEFINE_string("cell_min_points", '50', 
                        "minimum number of points in the cell")
 # tf.flags.DEFINE_string("cluster_mode", 'kmeans',
 #                        "kmeans, spectral, dirichlet")

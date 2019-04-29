@@ -613,13 +613,13 @@ class AutoEncoder():
         all displayed results are sweep-level on testing set.
         '''
         if self.level > 1:
-            level_idx = self.level_table[self.combination]
+            level_idx = self.label_level
             if self.combination == 'down':
-                points = self.group_multi_down(point_cell.test_cell)
+                points = self.group_multi_down(point_cell.test_cell, level_idx)
             elif self.combination == 'up':
-                points = self.group_multi_up(point_cell.test_cell)
+                points = self.group_multi_up(point_cell.test_cell, level_idx)
             elif self.combination == 'sandwich':
-                points = self.group_multi_up(point_cell.test_cell)
+                points = self.group_multi_middle(point_cell.test_cell)
                 level_idx = -2
             num_cell = len(points)
         else:
@@ -955,13 +955,13 @@ class AutoEncoder():
         level_points = points.iloc[start_idx:end_idx]
         sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['points'])
-        sample_points = np.array(list(sample_points.squeeze()))
+        sample_points = np.array(list(sample_points.squeeze(1)))
         sample_num = sample_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         sample_meta = sample_points_df
 
         orig_points_df = level_points[(level_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
         orig_points = orig_points_df.as_matrix(columns=['points'])
-        orig_points = np.array(list(orig_points.squeeze()))
+        orig_points = np.array(list(orig_points.squeeze(1)))
         orig_num = orig_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         orig_meta = orig_points_df
 
@@ -972,13 +972,13 @@ class AutoEncoder():
         level_points = points[level_idx]
         sample_points_df = level_points[level_points['num_points'] >= self.cell_min_points[level_idx]]
         sample_points = sample_points_df.as_matrix(columns=['points'])
-        sample_points = np.array(list(sample_points.squeeze()))
+        sample_points = np.array(list(sample_points.squeeze(1)))
         sample_num = sample_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         sample_meta = sample_points_df
 
         orig_points_df = level_points[(level_points['num_points']<self.cell_min_points[level_idx]) & (level_points['num_points']>0)]
         orig_points = orig_points_df.as_matrix(columns=['points'])
-        orig_points = np.array(list(orig_points.squeeze()))
+        orig_points = np.array(list(orig_points.squeeze(1)))
         orig_num = orig_points_df.as_matrix(columns=['num_points']).squeeze().astype(int)
         orig_meta = orig_points_df
 
