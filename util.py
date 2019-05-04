@@ -716,7 +716,8 @@ class LoadData():
         self.test_cleaned_velo = []
         self.test_hdmap_center = []
         self.test_hdmap = []
-
+        self.num_test_hdmap = len(test_f_list)
+        
         for idx, file in enumerate(train_f_list):
             sweep = pickle.load(open(file, "rb"))
             for cell_pos, k in enumerate(sweep.keys()):

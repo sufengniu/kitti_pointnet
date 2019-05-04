@@ -645,9 +645,10 @@ class AutoEncoder():
                 orig_points = point_cell.reconstruct_scene(sweep_orig[:,level_idx,...], orig_meta)
             else:
                 gt_points = point_cell.reconstruct_scene(sweep_compress, compress_meta)
-                orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
+                if sweep_orig.shape[0] > 0:
+                    orig_points = point_cell.reconstruct_scene(sweep_orig, orig_meta)
             import numpy as np
-            orig_all = np.concatenate([gt_points, orig_points], axis=0)
+            orig_all = np.concatenate([gt_points, orig_points], axis=0) if sweep_orig.shape[0] > 0 else gt_points
 
             num_compress = compress_meta.as_matrix(columns=['num_points']).squeeze().astype(int)
             total_compress_num = orig_num.sum() + num_compress.shape[0]*num_points
@@ -723,7 +724,7 @@ class AutoEncoder():
                 total_points = np.concatenate(total_points, axis=0)
                 pred_points = point_cell.reconstruct_scene(total_points, compress_meta)
             
-                pred_all = np.concatenate([pred_points, orig_points], axis=0)
+                pred_all = np.concatenate([pred_points, orig_points], axis=0) if orig_points.shape[0] > 0 else pred_points
             
             mean_all, var_all, mse_all = util.sweep_stat(pred_all, orig_all)
             sample_vel_all, sample_vcl_all = self.sub_sample(pred_all, orig_all, repeat=10)
