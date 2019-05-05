@@ -631,6 +631,8 @@ class AutoEncoder():
             sweep_size = self.L[level_idx] * self.W[level_idx]
         else:
             sweep_size = point_cell.image_height[level_idx] * point_cell.image_width[level_idx]
+        if point_cell.dataset == 'hdmap':
+            hd_sweep = []
         save_emd_all, save_chamfer_all = [], []
         save_mean_all, save_var_all, save_mse_all = [], [], []
         save_emd_part, save_chamfer_part = [], []
@@ -726,6 +728,9 @@ class AutoEncoder():
             
                 pred_all = np.concatenate([pred_points, orig_points], axis=0) if orig_points.shape[0] > 0 else pred_points
             
+            if point_cell.dataset == "hdmap":
+                hd_sweep.append(pred_all + point_cell.test_hdmap_center[i//sweep_size])
+            
             mean_all, var_all, mse_all = util.sweep_stat(pred_all, orig_all)
             sample_vel_all, sample_vcl_all = self.sub_sample(pred_all, orig_all, repeat=10)
             
@@ -748,6 +753,14 @@ class AutoEncoder():
             save_var_all.append(var_all)
             save_mse_all.append(mse_all)
 
+        if point_cell.dataset == "hdmap":
+            hdmap_pred_np, hdmap_gt_np = [], []
+            s = 0
+            for i in range(point_cell.num_test_hdmap): 
+                hdmap_pred_np.append(np.concatenate(hd_sweep[s:point_cell.test_hdmap_sweep_interval[i]], 0))
+                s = point_cell.test_hdmap_sweep_interval[i]
+            np.save("hdmap_pred", hdmap_pred_np[0])
+            np.save("hdmap_gt", point_cell.test_hdmap[0])
         print ("all points evaluation statistics:")
         print ('testing sweep mean emd loss: {}, mean chamfer loss: {}'.format(np.array(save_emd_all).mean(),
                                                                                np.array(save_chamfer_all).mean()))

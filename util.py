@@ -717,7 +717,8 @@ class LoadData():
         self.test_hdmap_center = []
         self.test_hdmap = []
         self.num_test_hdmap = len(test_f_list)
-        
+        self.test_hdmap_sweep_interval = []
+
         for idx, file in enumerate(train_f_list):
             sweep = pickle.load(open(file, "rb"))
             for cell_pos, k in enumerate(sweep.keys()):
@@ -730,6 +731,7 @@ class LoadData():
         for idx, file in enumerate(test_f_list):
             sweep = pickle.load(open(file, "rb"))
             hdmap = []
+            offset = idx * self.test_hdmap_sweep_interval[-1] if len(self.test_hdmap_sweep_interval) > 0 else 0
             for cell_pos, k in enumerate(sweep.keys()):
                 # if k in select_cells:
                 center = self._get_center(sweep[k])
@@ -737,6 +739,8 @@ class LoadData():
                 self.test_cleaned_velo.append(centered_sweep)
                 self.test_hdmap_center.append(center)
                 hdmap.append(sweep[k])
+            interval = cell_pos + offset
+            self.test_hdmap_sweep_interval.append(interval)
 
             dps = np.concatenate(hdmap, 0)
             
