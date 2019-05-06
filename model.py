@@ -759,8 +759,8 @@ class AutoEncoder():
             for i in range(point_cell.num_test_hdmap): 
                 hdmap_pred_np.append(np.concatenate(hd_sweep[s:point_cell.test_hdmap_sweep_interval[i]], 0))
                 s = point_cell.test_hdmap_sweep_interval[i]
-            np.save("hdmap_pred", hdmap_pred_np[0])
-            np.save("hdmap_gt", point_cell.test_hdmap[0])
+            np.savetxt(self.result_output_path + "/hdmap_pred.txt", hdmap_pred_np[0])
+            np.savetxt(self.result_output_path + "/hdmap_gt.txt", point_cell.test_hdmap[0])
         print ("all points evaluation statistics:")
         print ('testing sweep mean emd loss: {}, mean chamfer loss: {}'.format(np.array(save_emd_all).mean(),
                                                                                np.array(save_chamfer_all).mean()))
