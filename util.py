@@ -744,9 +744,9 @@ class LoadData():
 
             dps = np.concatenate(hdmap, 0)
             
-            d_num = 200000
-            idx = np.random.choice(dps.shape[0], d_num, replace=False)
-            dps = dps[idx]
+            #d_num = 200000
+            #idx = np.random.choice(dps.shape[0], d_num, replace=False)
+            #dps = dps[idx]
             self.test_hdmap.append(dps)
             
         # random.seed(10)

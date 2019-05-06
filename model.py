@@ -798,6 +798,7 @@ class AutoEncoder():
 
     def plot_hdmap(self, point_cell, center, ckpt_name, mode, num_points=6, level_idx=0):
         '''
+        @deprecated
         this is the plot function that plot hdmap in testing set, This plot function 
         is not stable, [TODO]: need to include octree
         '''
