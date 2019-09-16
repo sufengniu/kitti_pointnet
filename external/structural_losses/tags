@@ -1,0 +1,8 @@
+!_TAG_FILE_SORTED	2	/0=unsorted, 1=sorted, 2=foldcase/
+cudalib	/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet/external/structural_losses/makefile	/^cudalib=\/software\/cuda-toolkit\/9.2\/lib64$/;"	m	language:Make
+D_GLIBCXX_USE_CXX11_ABI	/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet/external/structural_losses/makefile	/^	nvcc -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++11 -c -o tf_approxmatch_g.cu.o tf_approxmatch_g.cu $(INC) -DGOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -O2$/;"	m	language:Make
+D_GLIBCXX_USE_CXX11_ABI	/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet/external/structural_losses/makefile	/^	nvcc -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++11 -c -o tf_nndistance_g.cu.o tf_nndistance_g.cu $(INC) -DGOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -O2$/;"	m	language:Make
+INC	/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet/external/structural_losses/makefile	/^INC=-I $(tf_inc) -I $(tf_inc)\/external\/nsync\/public$/;"	m	language:Make
+LIB	/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet/external/structural_losses/makefile	/^LIB=-L $(tf_lib) -ltensorflow_framework$/;"	m	language:Make
+tf_inc	/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet/external/structural_losses/makefile	/^tf_inc=\/home\/sniu\/.conda\/envs\/tf\/lib\/python3.6\/site-packages\/tensorflow\/include$/;"	m	language:Make
+tf_lib	/home/sniu/lab/ai_lab/pc_pool/kitti_pointnet/external/structural_losses/makefile	/^tf_lib=\/home\/sniu\/.conda\/envs\/tf\/lib\/python3.6\/site-packages\/tensorflow$/;"	m	language:Make
